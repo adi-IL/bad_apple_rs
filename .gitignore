@@ -1,0 +1,6 @@
+target/
+Cargo.lock
+bad_apple.bin
+frames/
+bad_apple.mp4
+audio.ogg

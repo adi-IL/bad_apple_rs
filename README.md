@@ -21,7 +21,7 @@ Ever wanted to see the legendary "Bad Apple!!" video rendered entirely in ASCII 
    cargo run --release -- play
    ```
 
-## 🛠️ Requirements
+## Requirements
 
 - Rust and Cargo
 - A terminal of your choice

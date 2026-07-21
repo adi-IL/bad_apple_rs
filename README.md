@@ -1,6 +1,6 @@
 # Bad Apple 🍎 in Rust Terminal
 
-Ever wanted to see the legendary "Bad Apple!!" video rendered entirely in ASCII art right in your terminal? This minimal Rust CLI tool does exactly that. It dynamically scales to fit your terminal size and perfectly centers the frames—all while keeping dependencies to a bare minimum. 
+Ever wanted to see the legendary "Bad Apple!!" video rendered entirely in ASCII art right in your terminal? This minimal Rust CLI tool does exactly that. It dynamically scales to fit your terminal size and perfectly centers the frames, all while keeping dependencies to a bare minimum. 
 
 ## 🚀 Quick Start
 

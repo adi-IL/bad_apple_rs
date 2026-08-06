@@ -29,3 +29,5 @@ Ever wanted to see the legendary "Bad Apple!!" video rendered entirely in ASCII 
 ## 📝 License
 
 This project is licensed under the MIT License.
+
+<!-- Optimal terminal dimensions: 80x24 or larger -->

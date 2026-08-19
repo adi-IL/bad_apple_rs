@@ -1,10 +1,12 @@
 # Bad Apple Terminal Player in Rust
 
-A lightweight ASCII art video and audio player in Rust that renders the Bad Apple animation directly inside your terminal with real-time audio synchronization.
+A lightweight ASCII art video and audio player in Rust that renders the Bad Apple animation directly inside your terminal with optional synchronized audio playback.
 
 ## Quick Start
 
-Copy and run the following commands to clone the repository and start playback immediately:
+### Play Immediately (Zero C Dependencies)
+
+Clone the repository and run the player directly:
 
 ```bash
 git clone https://github.com/adi-IL/bad_apple_rs.git
@@ -12,49 +14,55 @@ cd bad_apple_rs
 cargo run --release -- play
 ```
 
-For the best visual experience, ensure your terminal window is sized to at least 80 columns by 60 rows.
+For the best visual presentation, resize your terminal window to at least 80 columns by 60 rows.
+
+### Play with Audio Output
+
+To enable audio playback with `rodio`, build with the `audio` feature:
+
+```bash
+cargo run --release --features audio -- play
+```
+
+> Note for Linux users: Audio support requires ALSA development headers:
+> `sudo apt-get install -y libasound2-dev pkg-config` (Ubuntu/Debian) or `sudo dnf install -y alsa-lib-devel pkgconf-pkg-config` (Fedora).
 
 ## Features
 
-- Synchronized audio and video playback at 30 frames per second
+- High performance ASCII rendering at 30 frames per second
 - In-memory double-buffered rendering to eliminate terminal flickering
 - Dynamic viewport centering based on current terminal dimensions
 - Standalone offline playback with pre-encoded binary assets included
+- Pure Rust default build requiring zero external C system libraries
+- Optional audio playback engine powered by Rodio
 - Built-in frame conversion tool to generate binary assets from raw image sequences
-
-## Prerequisites
-
-### Linux
-
-Linux systems require ALSA header files and pkg-config for audio output:
-
-- Ubuntu / Debian: `sudo apt-get install -y libasound2-dev pkg-config`
-- Fedora / RHEL: `sudo dnf install -y alsa-lib-devel pkgconf-pkg-config`
-- Arch Linux: `sudo pacman -S alsa-lib pkgconf`
-
-### macOS and Windows
-
-No extra C libraries are required. A standard Rust toolchain with Cargo is sufficient.
 
 ## CLI Usage
 
 ### Play Animation
 
-Play the default animation with synchronized audio:
+Play the default animation:
 
 ```bash
 cargo run --release -- play
 ```
 
-Specify custom binary and audio files:
+Play with audio enabled:
 
 ```bash
-cargo run --release -- play --input custom_frames.bin --audio custom_audio.ogg
+cargo run --release --features audio -- play
+```
+
+Specify custom frame binary or audio files:
+
+```bash
+cargo run --release -- play --input custom_frames.bin
+cargo run --release --features audio -- play --input custom_frames.bin --audio custom_audio.ogg
 ```
 
 ### Build Frames Binary (Optional)
 
-Convert a sequence of PNG frames into a single binary file:
+Convert a directory of PNG frames into a single binary file:
 
 ```bash
 cargo run --release -- build --frames-dir frames --output bad_apple.bin

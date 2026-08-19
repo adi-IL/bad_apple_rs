@@ -4,7 +4,6 @@ use crossterm::{
     execute,
     terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, size},
 };
-use image::GenericImageView;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -53,8 +52,6 @@ fn main() {
     }
 }
 
-
-
 fn build_frames(frames_dir: &str, output: &str) {
     let mut out_file = BufWriter::new(File::create(output).unwrap());
     let mut i = 1;
@@ -84,90 +81,101 @@ fn build_frames(frames_dir: &str, output: &str) {
 }
 
 fn play(input: &str, audio_path: &str) {
-    // Open frames
     let file = File::open(input).expect("Could not open frames binary file");
     let mut reader = BufReader::new(file);
 
-    // Audio setup
-    let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
-    let sink = rodio::Sink::try_new(&stream_handle).unwrap();
-
-    if let Ok(audio_file) = File::open(audio_path) {
-        let audio_reader = BufReader::new(audio_file);
-        if let Ok(decoder) = rodio::Decoder::new(audio_reader) {
-            sink.append(decoder);
-        } else {
-            eprintln!("Failed to decode audio");
+    #[cfg(feature = "audio")]
+    let _audio_handle = {
+        match rodio::OutputStream::try_default() {
+            Ok((stream, stream_handle)) => match rodio::Sink::try_new(&stream_handle) {
+                Ok(sink) => {
+                    if let Ok(audio_file) = File::open(audio_path) {
+                        let audio_reader = BufReader::new(audio_file);
+                        if let Ok(decoder) = rodio::Decoder::new(audio_reader) {
+                            sink.append(decoder);
+                            sink.play();
+                            Some((stream, sink))
+                        } else {
+                            eprintln!("Failed to decode audio");
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                Err(_) => None,
+            },
+            Err(_) => None,
         }
-    } else {
-        eprintln!("Audio file not found, playing without audio");
-    }
+    };
+
+    #[cfg(not(feature = "audio"))]
+    let _ = audio_path;
 
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, Hide, Clear(ClearType::All)).unwrap();
 
     let frame_size = (WIDTH * HEIGHT) as usize;
     let mut buffer = vec![0u8; frame_size];
-    
+
     let fps = 30.0;
     let frame_duration = Duration::from_secs_f64(1.0 / fps);
     let start_time = Instant::now();
     let mut frame_count = 0;
 
-    // Wait before starting to clear terminal
     thread::sleep(Duration::from_millis(500));
-    
-    // Play audio
-    sink.play();
 
     loop {
         match reader.read_exact(&mut buffer) {
             Ok(_) => {
-                // Get terminal dimensions to center and scale
                 let (term_width, term_height) = size().unwrap_or((80, 60));
-                
-                // Calculate padding to center the output
-                let pad_x = if term_width > WIDTH as u16 { (term_width - WIDTH as u16) / 2 } else { 0 };
-                let pad_y = if term_height > HEIGHT as u16 { (term_height - HEIGHT as u16) / 2 } else { 0 };
 
-                let mut output = String::with_capacity(frame_size + (term_height as usize * term_width as usize));
-                
-                // Add vertical padding
+                let pad_x = if term_width > WIDTH as u16 {
+                    (term_width - WIDTH as u16) / 2
+                } else {
+                    0
+                };
+                let pad_y = if term_height > HEIGHT as u16 {
+                    (term_height - HEIGHT as u16) / 2
+                } else {
+                    0
+                };
+
+                let mut output =
+                    String::with_capacity(frame_size + (term_height as usize * term_width as usize));
+
                 for _ in 0..pad_y {
                     output.push('\n');
                 }
 
                 for y in 0..HEIGHT {
-                    // Add horizontal padding
                     for _ in 0..pad_x {
                         output.push(' ');
                     }
-                    
+
                     let start = (y * WIDTH) as usize;
                     let end = start + WIDTH as usize;
                     let line = std::str::from_utf8(&buffer[start..end]).unwrap();
                     output.push_str(line);
                     output.push('\n');
                 }
-                
+
                 execute!(stdout, MoveTo(0, 0)).unwrap();
                 print!("{}", output);
                 std::io::stdout().flush().unwrap();
 
                 frame_count += 1;
-                
-                // Sync to time
+
                 let expected_time = frame_duration * frame_count;
                 let elapsed = start_time.elapsed();
                 if expected_time > elapsed {
                     thread::sleep(expected_time - elapsed);
                 }
             }
-            Err(_) => break, // EOF
+            Err(_) => break,
         }
     }
 
     execute!(stdout, Show, LeaveAlternateScreen).unwrap();
     println!("Finished playing.");
 }
-

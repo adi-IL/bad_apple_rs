@@ -1,7 +1,12 @@
 # Contributing
 
-Welcome! Issues and Pull Requests are absolutely welcome. 
+Contributions are welcome.
 
-In the spirit of keeping things simple and embracing our lazy senior developer philosophy, please keep your contributions minimal and concise. We prefer deleting unnecessary code over adding new complexities. 
+Please keep pull requests focused, concise, and minimal. Simple solutions and minimal dependency footprints are preferred.
 
-Thanks for helping out!
+## Workflow
+
+1. Fork and clone the repository.
+2. Create a topic branch for your changes.
+3. Verify your changes with `cargo check` and `cargo build`.
+4. Open a pull request describing what you changed and why.

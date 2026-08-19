@@ -1,6 +1,3 @@
-target/
-Cargo.lock
-bad_apple.bin
+/target
 frames/
 bad_apple.mp4
-audio.ogg

@@ -1,33 +1,58 @@
-# Bad Apple 🍎 in Rust Terminal
+# Bad Apple in Rust Terminal
 
-Ever wanted to see the legendary "Bad Apple!!" video rendered entirely in ASCII art right in your terminal? This minimal Rust CLI tool does exactly that. It dynamically scales to fit your terminal size and perfectly centers the frames, all while keeping dependencies to a bare minimum. 
+A terminal video player written in Rust that renders the "Bad Apple!!" animation using ASCII characters with synchronized audio playback.
 
-## 🚀 Quick Start
+## Features
 
-1. **Clone the repo**
-   ```bash
-   git clone https://github.com/adi-IL/bad_apple_rs.git
-   cd bad_apple_rs
-   ```
+- Synchronized audio and video playback at 30 FPS
+- Centered rendering dynamically adjusted to the terminal window size
+- Pre-built binary frame data included for immediate playback
+- Frame conversion tool to generate binary frame data from PNG sequences
 
-2. **Build the frames**
-   Make sure you have your extracted frame PNGs in a folder named `frames`.
-   ```bash
-   cargo run --release -- build
-   ```
+## Prerequisites
 
-3. **Play the animation!**
-   ```bash
-   cargo run --release -- play
-   ```
+### Linux
 
-## Requirements
+Building audio support on Linux requires ALSA development libraries and pkg-config:
 
-- Rust and Cargo
-- A terminal of your choice
+- Debian / Ubuntu: `sudo apt-get install -y libasound2-dev pkg-config`
+- Fedora / RHEL: `sudo dnf install -y alsa-lib-devel pkgconf-pkg-config`
+- Arch Linux: `sudo pacman -S alsa-lib pkgconf`
 
-## 📝 License
+### macOS and Windows
 
-This project is licensed under the MIT License.
+No additional system dependencies are required beyond the standard Rust toolchain.
 
-<!-- Optimal terminal dimensions: 80x24 or larger -->
+## Usage
+
+### Play Animation
+
+Play the animation using the included dataset and audio:
+
+```bash
+cargo run --release -- play
+```
+
+You can also provide custom file paths:
+
+```bash
+cargo run --release -- play --input bad_apple.bin --audio audio.ogg
+```
+
+### Build Binary Frames (Optional)
+
+If you have extracted frame PNG files in a directory:
+
+```bash
+cargo run --release -- build --frames-dir frames --output bad_apple.bin
+```
+
+The build command expects PNG files named in sequential order (`frame_0001.png`, `frame_0002.png`, etc.) at 80x60 resolution.
+
+## Terminal Size
+
+For best results without line wrapping or scrolling, resize your terminal window to at least 80 columns by 60 rows before running the player.
+
+## License
+
+This project is licensed under the MIT License. See the LICENSE file for details.

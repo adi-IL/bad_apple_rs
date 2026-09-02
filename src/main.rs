@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
+    event::{poll, read, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, size},
 };
@@ -32,12 +33,50 @@ enum Commands {
         input: String,
         #[arg(short, long, default_value = "audio.ogg")]
         audio: String,
+        #[arg(long, default_value_t = 30.0)]
+        fps: f64,
     },
 }
 
 const WIDTH: u32 = 80;
 const HEIGHT: u32 = 60;
 const ASCII_CHARS: &[u8] = b" .:-=+*#%@";
+
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn new() -> Self {
+        let mut stdout = std::io::stdout();
+        let _ = execute!(stdout, EnterAlternateScreen, Hide, Clear(ClearType::All));
+        Self
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let mut stdout = std::io::stdout();
+        let _ = execute!(stdout, Show, LeaveAlternateScreen);
+    }
+}
+
+fn pixel_to_ascii(pixel: u8) -> u8 {
+    let idx = (pixel as usize * (ASCII_CHARS.len() - 1)) / 255;
+    ASCII_CHARS[idx]
+}
+
+fn compute_padding(term_width: u16, term_height: u16, frame_w: u32, frame_h: u32) -> (u16, u16) {
+    let pad_x = if term_width > frame_w as u16 {
+        (term_width - frame_w as u16) / 2
+    } else {
+        0
+    };
+    let pad_y = if term_height > frame_h as u16 {
+        (term_height - frame_h as u16) / 2
+    } else {
+        0
+    };
+    (pad_x, pad_y)
+}
 
 fn main() {
     let cli = Cli::parse();
@@ -46,8 +85,8 @@ fn main() {
         Commands::Build { frames_dir, output } => {
             build_frames(frames_dir, output);
         }
-        Commands::Play { input, audio } => {
-            play(input, audio);
+        Commands::Play { input, audio, fps } => {
+            play(input, audio, *fps);
         }
     }
 }
@@ -70,9 +109,7 @@ fn build_frames(frames_dir: &str, output: &str) {
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
                 let pixel = gray.get_pixel(x, y)[0];
-                // Map 0-255 to 0-(ASCII_CHARS.len()-1)
-                let idx = (pixel as usize * (ASCII_CHARS.len() - 1)) / 255;
-                frame_data.push(ASCII_CHARS[idx]);
+                frame_data.push(pixel_to_ascii(pixel));
             }
         }
         out_file.write_all(&frame_data).unwrap();
@@ -80,7 +117,7 @@ fn build_frames(frames_dir: &str, output: &str) {
     }
 }
 
-fn play(input: &str, audio_path: &str) {
+fn play(input: &str, audio_path: &str, fps: f64) {
     let file = File::open(input).expect("Could not open frames binary file");
     let mut reader = BufReader::new(file);
 
@@ -112,34 +149,34 @@ fn play(input: &str, audio_path: &str) {
     #[cfg(not(feature = "audio"))]
     let _ = audio_path;
 
+    let _guard = TerminalGuard::new();
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, Hide, Clear(ClearType::All)).unwrap();
 
     let frame_size = (WIDTH * HEIGHT) as usize;
     let mut buffer = vec![0u8; frame_size];
 
-    let fps = 30.0;
-    let frame_duration = Duration::from_secs_f64(1.0 / fps);
+    let effective_fps = if fps <= 0.0 { 30.0 } else { fps };
+    let frame_duration = Duration::from_secs_f64(1.0 / effective_fps);
     let start_time = Instant::now();
     let mut frame_count = 0;
 
     thread::sleep(Duration::from_millis(500));
 
     loop {
+        if poll(Duration::from_millis(0)).unwrap_or(false) {
+            if let Ok(Event::Key(key)) = read() {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                    _ => {}
+                }
+            }
+        }
+
         match reader.read_exact(&mut buffer) {
             Ok(_) => {
                 let (term_width, term_height) = size().unwrap_or((80, 60));
-
-                let pad_x = if term_width > WIDTH as u16 {
-                    (term_width - WIDTH as u16) / 2
-                } else {
-                    0
-                };
-                let pad_y = if term_height > HEIGHT as u16 {
-                    (term_height - HEIGHT as u16) / 2
-                } else {
-                    0
-                };
+                let (pad_x, pad_y) = compute_padding(term_width, term_height, WIDTH, HEIGHT);
 
                 let mut output =
                     String::with_capacity(frame_size + (term_height as usize * term_width as usize));
@@ -155,14 +192,14 @@ fn play(input: &str, audio_path: &str) {
 
                     let start = (y * WIDTH) as usize;
                     let end = start + WIDTH as usize;
-                    let line = std::str::from_utf8(&buffer[start..end]).unwrap();
+                    let line = std::str::from_utf8(&buffer[start..end]).unwrap_or("");
                     output.push_str(line);
                     output.push('\n');
                 }
 
                 execute!(stdout, MoveTo(0, 0)).unwrap();
                 print!("{}", output);
-                std::io::stdout().flush().unwrap();
+                stdout.flush().unwrap();
 
                 frame_count += 1;
 
@@ -175,7 +212,29 @@ fn play(input: &str, audio_path: &str) {
             Err(_) => break,
         }
     }
+}
 
-    execute!(stdout, Show, LeaveAlternateScreen).unwrap();
-    println!("Finished playing.");
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pixel_to_ascii_extremes() {
+        assert_eq!(pixel_to_ascii(0), b' ');
+        assert_eq!(pixel_to_ascii(255), b'@');
+    }
+
+    #[test]
+    fn test_compute_padding_centered() {
+        let (pad_x, pad_y) = compute_padding(100, 80, 80, 60);
+        assert_eq!(pad_x, 10);
+        assert_eq!(pad_y, 10);
+    }
+
+    #[test]
+    fn test_compute_padding_clamped_at_zero() {
+        let (pad_x, pad_y) = compute_padding(60, 40, 80, 60);
+        assert_eq!(pad_x, 0);
+        assert_eq!(pad_y, 0);
+    }
 }

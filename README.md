@@ -26,6 +26,7 @@ To run pure Rust video playback without external audio dependencies:
 ```bash
 cargo run --release --no-default-features -- play
 ```
+
 ## Features
 
 - High performance ASCII rendering at 30 frames per second

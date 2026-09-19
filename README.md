@@ -30,13 +30,15 @@ cargo run --release --features audio -- play
 ## Features
 
 - High performance ASCII rendering at 30 frames per second
-- In-memory double-buffered rendering to eliminate terminal flickering
+- Monotonic clock pacing with frame dropping to eliminate audio and video drift
+- Allocation-free frame rendering using persistent reusable buffers
+- Panic hook and signal handling that guarantee terminal restoration
 - Dynamic viewport centering based on current terminal dimensions
+- Sequence gap detection during frame compilation
 - Standalone offline playback with pre-encoded binary assets included
 - Pure Rust default build requiring zero external C system libraries
 - Optional audio playback engine powered by Rodio
 - Built-in frame conversion tool to generate binary assets from raw image sequences
-
 ## CLI Usage
 
 ### Play Animation
@@ -76,6 +78,7 @@ The build command reads sequential PNG files (such as `frame_0001.png`, `frame_0
 |---|---|---|---|
 | `play` | `--input, -i` | `bad_apple.bin` | Path to the encoded ASCII frames binary file |
 | `play` | `--audio, -a` | `audio.ogg` | Path to the audio soundtrack file |
+| `play` | `--fps` | `30.0` | Target playback frame rate in frames per second |
 | `build` | `--frames-dir, -f` | `frames` | Directory containing sequential PNG frame files |
 | `build` | `--output, -o` | `bad_apple.bin` | Output path for the generated binary file |
 
@@ -91,6 +94,14 @@ The build command reads sequential PNG files (such as `frame_0001.png`, `frame_0
                          v                   v
                  [ Rodio Audio ]    [ Crossterm TUI (MoveTo 0,0) ]
 ```
+
+### Subsystem Modules
+
+- `src/cli.rs`. Command-line arguments and subcommand definitions using clap.
+- `src/terminal.rs`. RAII terminal guard, raw mode management, and panic hook restoration.
+- `src/render.rs`. ASCII luminance mapping, viewport padding, and allocation-free frame rendering.
+- `src/player.rs`. Monotonic clock pacing, frame-dropping drift elimination, and playback event loop.
+- `src/builder.rs`. Image sequence ingestion, gap detection, resizing, and atomic binary frame output.
 
 ## License
 

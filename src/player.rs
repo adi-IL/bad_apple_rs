@@ -69,6 +69,10 @@ pub fn read_frame<R: Read>(
     buffer: &mut [u8],
     frame_index: u64,
 ) -> Result<bool, Box<dyn std::error::Error>> {
+    if buffer.is_empty() {
+        return Err("Frame buffer cannot be empty".into());
+    }
+
     let mut first_byte = [0u8; 1];
     match reader.read_exact(&mut first_byte) {
         Ok(()) => {
@@ -316,5 +320,19 @@ mod tests {
         assert!(has_frame, "Full frame reader must return true");
         assert_eq!(buffer[0], b'X');
         assert_eq!(buffer[buffer.len() - 1], b'X');
+    }
+    #[test]
+    fn test_read_frame_empty_buffer_returns_error() {
+        let mut buffer = [];
+        let mut cursor = std::io::Cursor::new(b"X".to_vec());
+        let result = read_frame(&mut cursor, &mut buffer, 0);
+        assert!(
+            result.is_err(),
+            "Empty buffer must return an error without panicking"
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Frame buffer cannot be empty"
+        );
     }
 }

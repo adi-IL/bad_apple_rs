@@ -27,6 +27,38 @@ pub fn compute_frame_duration(fps: f64) -> Duration {
     let effective_fps = normalize_fps(fps);
     Duration::from_secs_f64(1.0 / effective_fps)
 }
+#[derive(Debug, Clone)]
+pub struct PlaybackClock {
+    pub start_time: Instant,
+    pub frame_duration: Duration,
+}
+
+impl PlaybackClock {
+    pub fn new(fps: f64) -> Self {
+        let normalized = normalize_fps(fps);
+        Self {
+            start_time: Instant::now(),
+            frame_duration: compute_frame_duration(normalized),
+        }
+    }
+
+    pub fn target_time(&self, frame: u64) -> Duration {
+        self.frame_duration.mul_f64(frame as f64)
+    }
+
+    pub fn should_drop_frame(&self, frame: u64) -> bool {
+        self.start_time.elapsed() > self.target_time(frame + 1)
+    }
+
+    pub fn sleep_until_next_frame(&self, frame: u64) {
+        let target = self.target_time(frame);
+        let elapsed = self.start_time.elapsed();
+        if target > elapsed {
+            thread::sleep(target - elapsed);
+        }
+    }
+}
+
 
 pub fn play(input: &str, audio_path: &str, fps: f64) -> Result<(), Box<dyn std::error::Error>> {
     play_with_cancel(input, audio_path, fps, &crate::INTERRUPTED)
@@ -38,8 +70,6 @@ pub fn play_with_cancel(
     fps: f64,
     interrupted: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let frame_duration = compute_frame_duration(fps);
-
     if interrupted.load(Ordering::Relaxed) {
         return Err("Playback aborted by user interrupt".into());
     }
@@ -89,9 +119,8 @@ pub fn play_with_cancel(
     if let Some((_, ref sink)) = _audio_handle {
         sink.play();
     }
-
-    let start_time = Instant::now();
-    let mut frame_count = 0;
+    let clock = PlaybackClock::new(fps);
+    let mut frame_index: u64 = 0;
 
     loop {
         if interrupted.load(Ordering::Relaxed) {
@@ -112,6 +141,11 @@ pub fn play_with_cancel(
 
         match reader.read_exact(&mut buffer) {
             Ok(_) => {
+                if clock.should_drop_frame(frame_index) {
+                    frame_index += 1;
+                    continue;
+                }
+
                 let current_size = size().unwrap_or((80, 60));
                 if current_size != last_size {
                     let _ = execute!(stdout, Clear(ClearType::All));
@@ -124,13 +158,8 @@ pub fn play_with_cancel(
                 print!("{output}");
                 stdout.flush()?;
 
-                frame_count += 1;
-
-                let expected_time = frame_duration * frame_count;
-                let elapsed = start_time.elapsed();
-                if expected_time > elapsed {
-                    thread::sleep(expected_time - elapsed);
-                }
+                frame_index += 1;
+                clock.sleep_until_next_frame(frame_index);
             }
             Err(_) => break,
         }
@@ -192,5 +221,43 @@ mod tests {
             result.unwrap_err().to_string(),
             "Playback aborted by user interrupt"
         );
+    }
+    #[test]
+    fn test_playback_clock_target_time() {
+        let clock = PlaybackClock::new(30.0);
+        assert_eq!(clock.target_time(0), Duration::ZERO);
+        assert_eq!(clock.target_time(1), clock.frame_duration);
+        assert_eq!(clock.target_time(30), clock.frame_duration.mul_f64(30.0));
+    }
+
+    #[test]
+    fn test_playback_clock_normalization() {
+        let clock_nan = PlaybackClock::new(f64::NAN);
+        assert_eq!(clock_nan.frame_duration, Duration::from_secs_f64(1.0 / 30.0));
+
+        let clock_neg = PlaybackClock::new(-12.0);
+        assert_eq!(clock_neg.frame_duration, Duration::from_secs_f64(1.0 / 30.0));
+
+        let clock_zero = PlaybackClock::new(0.0);
+        assert_eq!(clock_zero.frame_duration, Duration::from_secs_f64(1.0 / 30.0));
+
+        let clock_valid = PlaybackClock::new(60.0);
+        assert_eq!(clock_valid.frame_duration, Duration::from_secs_f64(1.0 / 60.0));
+    }
+
+    #[test]
+    fn test_playback_clock_should_drop_frame() {
+        let mut clock = PlaybackClock::new(30.0);
+        assert!(!clock.should_drop_frame(0));
+
+        clock.start_time = Instant::now() - Duration::from_millis(50);
+        assert!(clock.should_drop_frame(0));
+        assert!(!clock.should_drop_frame(1));
+    }
+
+    #[test]
+    fn test_playback_clock_sleep_until_next_frame() {
+        let clock = PlaybackClock::new(100.0);
+        clock.sleep_until_next_frame(0);
     }
 }

@@ -12,6 +12,7 @@ pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 fn init_signal_handler() {
     let _ = ctrlc::set_handler(|| {
         if INTERRUPTED.swap(true, Ordering::SeqCst) {
+            terminal::restore_terminal();
             std::process::exit(130);
         }
     });

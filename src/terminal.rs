@@ -19,6 +19,11 @@ pub fn restore_terminal() {
         let _ = disable_raw_mode();
     }
 }
+#[cfg(test)]
+pub fn is_terminal_active() -> bool {
+    TERMINAL_ACTIVE.load(Ordering::SeqCst)
+}
+
 
 pub fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
@@ -57,5 +62,13 @@ mod tests {
     #[test]
     fn test_restore_terminal_does_not_panic() {
         restore_terminal();
+    }
+    #[test]
+    fn test_terminal_active_lifecycle() {
+        assert!(!is_terminal_active());
+        TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
+        assert!(is_terminal_active());
+        restore_terminal();
+        assert!(!is_terminal_active());
     }
 }

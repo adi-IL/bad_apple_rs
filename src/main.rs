@@ -48,8 +48,12 @@ impl TerminalGuard {
     fn new() -> Result<Self, std::io::Error> {
         let mut stdout = std::io::stdout();
         crossterm::terminal::enable_raw_mode()?;
-        execute!(stdout, EnterAlternateScreen, Hide, Clear(ClearType::All))?;
-        Ok(Self)
+        let guard = Self;
+        if let Err(err) = execute!(stdout, EnterAlternateScreen, Hide, Clear(ClearType::All)) {
+            drop(guard);
+            return Err(err);
+        }
+        Ok(guard)
     }
 }
 
@@ -95,10 +99,13 @@ fn main() {
 }
 
 fn build_frames(frames_dir: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let first_frame = format!("{frames_dir}/frame_0001.png");
+    if !Path::new(&first_frame).exists() {
+        return Err(format!("No frames found in directory: {frames_dir}").into());
+    }
+
     let output_path = Path::new(output);
-    if let Some(parent) = output_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
+    if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
 
@@ -133,10 +140,7 @@ fn build_frames(frames_dir: &str, output: &str) -> Result<(), Box<dyn std::error
         processed += 1;
     }
 
-    if processed == 0 {
-        return Err(format!("No frames found in directory: {frames_dir}").into());
-    }
-
+    out_file.flush()?;
     println!("Finished processing {processed} frames.");
     Ok(())
 }
@@ -181,7 +185,11 @@ fn play(input: &str, audio_path: &str, fps: f64) -> Result<(), Box<dyn std::erro
     let frame_size = (WIDTH * HEIGHT) as usize;
     let mut buffer = vec![0u8; frame_size];
 
-    let effective_fps = if fps <= 0.0 { 30.0 } else { fps };
+    let effective_fps = if !fps.is_finite() || fps <= 0.0 {
+        30.0
+    } else {
+        fps
+    };
     let frame_duration = Duration::from_secs_f64(1.0 / effective_fps);
     let mut last_size = size().unwrap_or((80, 60));
 
@@ -195,7 +203,7 @@ fn play(input: &str, audio_path: &str, fps: f64) -> Result<(), Box<dyn std::erro
 
     loop {
         while poll(Duration::from_millis(0))? {
-            if let Ok(Event::Key(key)) = read() {
+            if let Event::Key(key) = read()? {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -302,17 +310,58 @@ mod tests {
     }
 
     #[test]
-    fn test_build_missing_frames_returns_error() {
-        let result = build_frames("nonexistent_frames_directory_xyz", "target/out.bin");
+    fn test_play_nan_fps_does_not_panic() {
+        let result = play("nonexistent_bad_apple.bin", "audio.ogg", f64::NAN);
         assert!(
             result.is_err(),
-            "Missing frames directory must return an Err"
+            "NaN fps must not panic and return Err on missing file"
         );
     }
 
     #[test]
+    fn test_build_missing_frames_returns_error() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("bad_apple_missing_frames_{}", std::process::id()));
+        let out_file = temp_dir.join("out.bin");
+        let result = build_frames(
+            "nonexistent_frames_directory_xyz",
+            out_file.to_str().unwrap(),
+        );
+        assert!(
+            result.is_err(),
+            "Missing frames directory must return an Err"
+        );
+        assert!(
+            !out_file.exists(),
+            "Output file must not be created on error"
+        );
+    }
+
+    #[test]
+    fn test_build_frames_does_not_truncate_existing_file_on_error() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("bad_apple_truncate_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let out_file = temp_dir.join("existing.bin");
+        std::fs::write(&out_file, b"preserve me").unwrap();
+
+        let result = build_frames("nonexistent_frames_dir_123", out_file.to_str().unwrap());
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(&out_file).unwrap(),
+            b"preserve me",
+            "Existing output file must not be truncated when frames are missing"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn test_build_frames_resizes_non_standard_image() {
-        let temp_dir = std::env::temp_dir().join("bad_apple_test_frames");
+        let temp_dir =
+            std::env::temp_dir().join(format!("bad_apple_test_frames_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 

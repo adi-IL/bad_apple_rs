@@ -60,12 +60,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_restore_terminal_does_not_panic() {
-        restore_terminal();
-    }
-    #[test]
-    fn test_terminal_active_lifecycle() {
+    fn test_restore_terminal_lifecycle() {
+        TERMINAL_ACTIVE.store(false, Ordering::SeqCst);
         assert!(!is_terminal_active());
+        restore_terminal();
+        assert!(!is_terminal_active());
+
         TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
         assert!(is_terminal_active());
         restore_terminal();

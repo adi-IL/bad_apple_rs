@@ -22,7 +22,7 @@ pub enum Commands {
         input: String,
         #[arg(short, long, default_value = "audio.ogg")]
         audio: String,
-        #[arg(long, default_value_t = 30.0)]
+        #[arg(long, default_value_t = crate::player::DEFAULT_FPS)]
         fps: f64,
     },
 }

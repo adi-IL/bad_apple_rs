@@ -26,9 +26,15 @@ pub fn compute_padding(
     (pad_x, pad_y)
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FrameRenderer {
     buffer: String,
+}
+
+impl Default for FrameRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FrameRenderer {
@@ -57,7 +63,9 @@ impl FrameRenderer {
                 let line = std::str::from_utf8(slice).unwrap_or("");
                 self.buffer.push_str(line);
             }
-            self.buffer.push_str("\r\n");
+            if y + 1 < HEIGHT || pad_y > 0 {
+                self.buffer.push_str("\r\n");
+            }
         }
 
         &self.buffer
@@ -117,5 +125,15 @@ mod tests {
             renderer.render(&dummy, 80, 60);
             assert_eq!(renderer.capacity(), initial_capacity);
         }
+    }
+    #[test]
+    fn test_render_frame_no_trailing_newline_on_exact_dimensions() {
+        let mut renderer = FrameRenderer::default();
+        let dummy = vec![b' '; (WIDTH * HEIGHT) as usize];
+        let frame = renderer.render(&dummy, 80, 60);
+        assert!(
+            !frame.ends_with("\r\n"),
+            "Exact 80x60 rendering must not end with \\r\\n to avoid scroll"
+        );
     }
 }

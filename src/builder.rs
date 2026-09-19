@@ -61,6 +61,7 @@ pub fn build_frames_with_cancel(
     let mut out_file = BufWriter::new(out_file);
     let mut i = 1;
     let mut processed = 0;
+    let mut frame_data = Vec::with_capacity((WIDTH * HEIGHT) as usize);
 
     loop {
         if interrupted.load(Ordering::Relaxed) {
@@ -69,6 +70,23 @@ pub fn build_frames_with_cancel(
 
         let frame_path = format!("{}/frame_{:04}.png", frames_dir, i);
         if !Path::new(&frame_path).exists() {
+            if let Ok(entries) = std::fs::read_dir(frames_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let is_gap = name
+                        .strip_prefix("frame_")
+                        .and_then(|s| s.strip_suffix(".png"))
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .is_some_and(|num| num > i);
+
+                    if is_gap {
+                        return Err(format!(
+                            "Gap in frame sequence: frame_{i:04}.png is missing but {name} exists"
+                        )
+                        .into());
+                    }
+                }
+            }
             break;
         }
 
@@ -79,7 +97,7 @@ pub fn build_frames_with_cancel(
             img
         };
         let gray = img.to_luma8();
-        let mut frame_data = Vec::with_capacity((WIDTH * HEIGHT) as usize);
+        frame_data.clear();
 
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
@@ -225,6 +243,29 @@ mod tests {
                 "Temp file was not cleaned up: {name}"
             );
         }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+    #[test]
+    fn test_build_frames_detects_sequence_gap() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("bad_apple_gap_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let frames_dir = temp_dir.join("frames");
+        std::fs::create_dir_all(&frames_dir).unwrap();
+        let valid_img = image::GrayImage::from_pixel(80, 60, image::Luma([128]));
+        valid_img.save(frames_dir.join("frame_0001.png")).unwrap();
+        valid_img.save(frames_dir.join("frame_0003.png")).unwrap();
+
+        let out_file = temp_dir.join("out.bin");
+        let result = build_frames(frames_dir.to_str().unwrap(), out_file.to_str().unwrap());
+        assert!(result.is_err(), "Sequence gap must return an Err");
+        assert!(
+            result.unwrap_err().to_string().contains("Gap in frame sequence"),
+            "Error message must specify gap in frame sequence"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

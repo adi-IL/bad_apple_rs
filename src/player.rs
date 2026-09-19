@@ -13,10 +13,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub const MIN_FPS: f64 = 0.001;
+pub const MAX_FPS: f64 = 1_000_000.0;
 pub const DEFAULT_FPS: f64 = 30.0;
 
 pub fn normalize_fps(fps: f64) -> f64 {
-    if !fps.is_finite() || fps < MIN_FPS {
+    if !fps.is_finite() || fps < MIN_FPS || fps > MAX_FPS {
         DEFAULT_FPS
     } else {
         fps
@@ -47,14 +48,19 @@ impl PlaybackClock {
     }
 
     pub fn should_drop_frame(&self, frame: u64) -> bool {
-        self.start_time.elapsed() > self.target_time(frame + 1)
+        self.start_time.elapsed() > self.target_time(frame.saturating_add(1))
     }
 
-    pub fn sleep_until_next_frame(&self, frame: u64) {
+    pub fn sleep_until_next_frame(&self, frame: u64, interrupted: &AtomicBool) {
         let target = self.target_time(frame);
-        let elapsed = self.start_time.elapsed();
-        if target > elapsed {
-            thread::sleep(target - elapsed);
+        while !interrupted.load(Ordering::Relaxed) {
+            let elapsed = self.start_time.elapsed();
+            if target <= elapsed {
+                break;
+            }
+            let remaining = target - elapsed;
+            let step = remaining.min(Duration::from_millis(50));
+            thread::sleep(step);
         }
     }
 }
@@ -139,8 +145,14 @@ pub fn play_with_cancel(
             }
         }
 
-        match reader.read_exact(&mut buffer) {
-            Ok(_) => {
+        let mut first_byte = [0u8; 1];
+        match reader.read_exact(&mut first_byte) {
+            Ok(()) => {
+                buffer[0] = first_byte[0];
+                reader.read_exact(&mut buffer[1..]).map_err(|e| {
+                    format!("Corrupt or truncated frame {frame_index}: {e}")
+                })?;
+
                 if clock.should_drop_frame(frame_index) {
                     frame_index += 1;
                     continue;
@@ -159,9 +171,10 @@ pub fn play_with_cancel(
                 stdout.flush()?;
 
                 frame_index += 1;
-                clock.sleep_until_next_frame(frame_index);
+                clock.sleep_until_next_frame(frame_index, interrupted);
             }
-            Err(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(format!("Error reading frame {frame_index}: {e}").into()),
         }
     }
 
@@ -243,8 +256,10 @@ mod tests {
 
         let clock_valid = PlaybackClock::new(60.0);
         assert_eq!(clock_valid.frame_duration, Duration::from_secs_f64(1.0 / 60.0));
-    }
 
+        let clock_huge = PlaybackClock::new(1e12);
+        assert_eq!(clock_huge.frame_duration, Duration::from_secs_f64(1.0 / 30.0));
+    }
     #[test]
     fn test_playback_clock_should_drop_frame() {
         let mut clock = PlaybackClock::new(30.0);
@@ -258,6 +273,22 @@ mod tests {
     #[test]
     fn test_playback_clock_sleep_until_next_frame() {
         let clock = PlaybackClock::new(100.0);
-        clock.sleep_until_next_frame(0);
+        let interrupted = AtomicBool::new(false);
+        clock.sleep_until_next_frame(0, &interrupted);
+    }
+
+    #[test]
+    fn test_play_truncated_frame_returns_error() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("bad_apple_trunc_play_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let corrupt_file = temp_dir.join("corrupt.bin");
+        std::fs::write(&corrupt_file, b"0123456789").unwrap();
+
+        let result = play(corrupt_file.to_str().unwrap(), "audio.ogg", 30.0);
+        assert!(result.is_err(), "Partial/truncated frame must return Err");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

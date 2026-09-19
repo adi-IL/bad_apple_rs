@@ -7,11 +7,17 @@ use crossterm::{
     },
 };
 use std::io::stdout;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 
 pub fn restore_terminal() {
-    let mut out = stdout();
-    let _ = execute!(out, Show, LeaveAlternateScreen);
-    let _ = disable_raw_mode();
+    if TERMINAL_ACTIVE.swap(false, Ordering::SeqCst) {
+        let mut out = stdout();
+        let _ = execute!(out, Show, LeaveAlternateScreen);
+        let _ = disable_raw_mode();
+    }
 }
 
 pub fn install_panic_hook() {
@@ -28,12 +34,12 @@ impl TerminalGuard {
     pub fn new() -> Result<Self, std::io::Error> {
         let mut out = stdout();
         enable_raw_mode()?;
-        let guard = Self;
         if let Err(err) = execute!(out, EnterAlternateScreen, Hide, Clear(ClearType::All)) {
-            drop(guard);
+            let _ = disable_raw_mode();
             return Err(err);
         }
-        Ok(guard)
+        TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
+        Ok(Self)
     }
 }
 

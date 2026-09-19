@@ -176,26 +176,7 @@ fn play(input: &str, audio_path: &str, fps: f64) {
         match reader.read_exact(&mut buffer) {
             Ok(_) => {
                 let (term_width, term_height) = size().unwrap_or((80, 60));
-                let (pad_x, pad_y) = compute_padding(term_width, term_height, WIDTH, HEIGHT);
-
-                let mut output =
-                    String::with_capacity(frame_size + (term_height as usize * term_width as usize));
-
-                for _ in 0..pad_y {
-                    output.push('\n');
-                }
-
-                for y in 0..HEIGHT {
-                    for _ in 0..pad_x {
-                        output.push(' ');
-                    }
-
-                    let start = (y * WIDTH) as usize;
-                    let end = start + WIDTH as usize;
-                    let line = std::str::from_utf8(&buffer[start..end]).unwrap_or("");
-                    output.push_str(line);
-                    output.push('\n');
-                }
+                let output = render_frame(&buffer, term_width, term_height);
 
                 execute!(stdout, MoveTo(0, 0)).unwrap();
                 print!("{}", output);
@@ -212,6 +193,32 @@ fn play(input: &str, audio_path: &str, fps: f64) {
             Err(_) => break,
         }
     }
+}
+
+fn render_frame(buffer: &[u8], term_width: u16, term_height: u16) -> String {
+    let frame_size = (WIDTH * HEIGHT) as usize;
+    let (pad_x, pad_y) = compute_padding(term_width, term_height, WIDTH, HEIGHT);
+
+    let mut output =
+        String::with_capacity(frame_size + (term_height as usize * term_width as usize));
+
+    for _ in 0..pad_y {
+        output.push('\n');
+    }
+
+    for y in 0..HEIGHT {
+        for _ in 0..pad_x {
+            output.push(' ');
+        }
+
+        let start = (y * WIDTH) as usize;
+        let end = start + WIDTH as usize;
+        let line = std::str::from_utf8(&buffer[start..end]).unwrap_or("");
+        output.push_str(line);
+        output.push('\n');
+    }
+
+    output
 }
 
 #[cfg(test)]
@@ -236,5 +243,12 @@ mod tests {
         let (pad_x, pad_y) = compute_padding(60, 40, 80, 60);
         assert_eq!(pad_x, 0);
         assert_eq!(pad_y, 0);
+    }
+
+    #[test]
+    fn test_render_frame_contains_carriage_returns() {
+        let dummy = vec![b' '; (WIDTH * HEIGHT) as usize];
+        let frame = render_frame(&dummy, 80, 60);
+        assert!(frame.contains("\r\n"), "Rendered frames in raw mode must contain \\r\\n");
     }
 }

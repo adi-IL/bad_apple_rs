@@ -140,6 +140,14 @@ fn main() {
 }
 
 fn build_frames(frames_dir: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
+    build_frames_with_cancel(frames_dir, output, &INTERRUPTED)
+}
+
+fn build_frames_with_cancel(
+    frames_dir: &str,
+    output: &str,
+    interrupted: &AtomicBool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let first_frame = format!("{frames_dir}/frame_0001.png");
     if !Path::new(&first_frame).exists() {
         return Err(format!("No frames found in directory: {frames_dir}").into());
@@ -167,7 +175,7 @@ fn build_frames(frames_dir: &str, output: &str) -> Result<(), Box<dyn std::error
     let mut processed = 0;
 
     loop {
-        if INTERRUPTED.load(Ordering::Relaxed) {
+        if interrupted.load(Ordering::Relaxed) {
             return Err("Build aborted by user interrupt".into());
         }
 
@@ -210,7 +218,20 @@ fn build_frames(frames_dir: &str, output: &str) -> Result<(), Box<dyn std::error
 }
 
 fn play(input: &str, audio_path: &str, fps: f64) -> Result<(), Box<dyn std::error::Error>> {
+    play_with_cancel(input, audio_path, fps, &INTERRUPTED)
+}
+
+fn play_with_cancel(
+    input: &str,
+    audio_path: &str,
+    fps: f64,
+    interrupted: &AtomicBool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let frame_duration = compute_frame_duration(fps);
+
+    if interrupted.load(Ordering::Relaxed) {
+        return Err("Playback aborted by user interrupt".into());
+    }
 
     let file = File::open(input)
         .map_err(|e| format!("Could not open frames binary file '{input}': {e}"))?;
@@ -261,6 +282,10 @@ fn play(input: &str, audio_path: &str, fps: f64) -> Result<(), Box<dyn std::erro
     let mut frame_count = 0;
 
     loop {
+        if interrupted.load(Ordering::Relaxed) {
+            return Err("Playback aborted by user interrupt".into());
+        }
+
         while poll(Duration::from_millis(0))? {
             if let Event::Key(key) = read()? {
                 match key.code {
@@ -494,10 +519,12 @@ mod tests {
 
         let out_file = temp_dir.join("out.bin");
 
-        // Simulate interrupt signal
-        INTERRUPTED.store(true, Ordering::SeqCst);
-        let result = build_frames(frames_dir.to_str().unwrap(), out_file.to_str().unwrap());
-        INTERRUPTED.store(false, Ordering::SeqCst);
+        let interrupted = AtomicBool::new(true);
+        let result = build_frames_with_cancel(
+            frames_dir.to_str().unwrap(),
+            out_file.to_str().unwrap(),
+            &interrupted,
+        );
 
         assert!(result.is_err(), "Interrupt signal must abort build");
         assert!(
@@ -515,5 +542,16 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_play_cleanup_on_interrupt() {
+        let interrupted = AtomicBool::new(true);
+        let result = play_with_cancel("nonexistent_bad_apple.bin", "audio.ogg", 30.0, &interrupted);
+        assert!(result.is_err(), "Interrupt signal must abort play");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Playback aborted by user interrupt"
+        );
     }
 }

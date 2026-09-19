@@ -8,6 +8,7 @@ use crossterm::{
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -110,7 +111,18 @@ fn compute_frame_duration(fps: f64) -> Duration {
     Duration::from_secs_f64(1.0 / effective_fps)
 }
 
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+fn init_signal_handler() {
+    let _ = ctrlc::set_handler(|| {
+        if INTERRUPTED.swap(true, Ordering::SeqCst) {
+            std::process::exit(130);
+        }
+    });
+}
+
 fn main() {
+    init_signal_handler();
     let cli = Cli::parse();
 
     let result = match &cli.command {
@@ -120,6 +132,9 @@ fn main() {
 
     if let Err(err) = result {
         eprintln!("Error: {err}");
+        if INTERRUPTED.load(Ordering::Relaxed) {
+            std::process::exit(130);
+        }
         std::process::exit(1);
     }
 }
@@ -152,6 +167,10 @@ fn build_frames(frames_dir: &str, output: &str) -> Result<(), Box<dyn std::error
     let mut processed = 0;
 
     loop {
+        if INTERRUPTED.load(Ordering::Relaxed) {
+            return Err("Build aborted by user interrupt".into());
+        }
+
         let frame_path = format!("{}/frame_{:04}.png", frames_dir, i);
         if !Path::new(&frame_path).exists() {
             break;
@@ -178,8 +197,12 @@ fn build_frames(frames_dir: &str, output: &str) -> Result<(), Box<dyn std::error
     }
 
     out_file.flush()?;
+    out_file.get_ref().sync_all()?;
     drop(out_file);
     std::fs::rename(&temp_output, output)?;
+    if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        let _ = File::open(parent).and_then(|dir| dir.sync_all());
+    }
     cleanup.1 = true;
 
     println!("Finished processing {processed} frames.");
@@ -453,6 +476,43 @@ mod tests {
 
         let data = std::fs::read(&out_file).unwrap();
         assert_eq!(data.len(), (WIDTH * HEIGHT) as usize);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_build_frames_cleanup_on_interrupt() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("bad_apple_interrupt_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let frames_dir = temp_dir.join("frames");
+        std::fs::create_dir_all(&frames_dir).unwrap();
+        let valid_img = image::GrayImage::from_pixel(80, 60, image::Luma([128]));
+        valid_img.save(frames_dir.join("frame_0001.png")).unwrap();
+
+        let out_file = temp_dir.join("out.bin");
+
+        // Simulate interrupt signal
+        INTERRUPTED.store(true, Ordering::SeqCst);
+        let result = build_frames(frames_dir.to_str().unwrap(), out_file.to_str().unwrap());
+        INTERRUPTED.store(false, Ordering::SeqCst);
+
+        assert!(result.is_err(), "Interrupt signal must abort build");
+        assert!(
+            !out_file.exists(),
+            "Output file must not be created on interrupt"
+        );
+
+        for entry in std::fs::read_dir(&temp_dir).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().to_string();
+            assert!(
+                !name.starts_with(".tmp_"),
+                "Temp file was not cleaned up: {name}"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

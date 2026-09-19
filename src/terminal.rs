@@ -14,6 +14,14 @@ pub fn restore_terminal() {
     let _ = disable_raw_mode();
 }
 
+pub fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        restore_terminal();
+        default_hook(panic_info);
+    }));
+}
+
 pub struct TerminalGuard;
 
 impl TerminalGuard {

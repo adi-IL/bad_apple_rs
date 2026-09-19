@@ -19,6 +19,7 @@ fn init_signal_handler() {
 
 fn main() {
     init_signal_handler();
+    terminal::install_panic_hook();
     let cli = cli::Cli::parse();
 
     let result = match &cli.command {

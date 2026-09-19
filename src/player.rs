@@ -64,6 +64,25 @@ impl PlaybackClock {
         }
     }
 }
+pub fn read_frame<R: Read>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    frame_index: u64,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut first_byte = [0u8; 1];
+    match reader.read_exact(&mut first_byte) {
+        Ok(()) => {
+            buffer[0] = first_byte[0];
+            reader.read_exact(&mut buffer[1..]).map_err(|e| {
+                format!("Corrupt or truncated frame {frame_index}: {e}")
+            })?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(format!("Error reading frame {frame_index}: {e}").into()),
+    }
+}
+
 
 
 pub fn play(input: &str, audio_path: &str, fps: f64) -> Result<(), Box<dyn std::error::Error>> {
@@ -145,37 +164,29 @@ pub fn play_with_cancel(
             }
         }
 
-        let mut first_byte = [0u8; 1];
-        match reader.read_exact(&mut first_byte) {
-            Ok(()) => {
-                buffer[0] = first_byte[0];
-                reader.read_exact(&mut buffer[1..]).map_err(|e| {
-                    format!("Corrupt or truncated frame {frame_index}: {e}")
-                })?;
-
-                if clock.should_drop_frame(frame_index) {
-                    frame_index += 1;
-                    continue;
-                }
-
-                let current_size = size().unwrap_or((80, 60));
-                if current_size != last_size {
-                    let _ = execute!(stdout, Clear(ClearType::All));
-                    last_size = current_size;
-                }
-
-                let output = renderer.render(&buffer, current_size.0, current_size.1);
-
-                execute!(stdout, MoveTo(0, 0))?;
-                print!("{output}");
-                stdout.flush()?;
-
-                frame_index += 1;
-                clock.sleep_until_next_frame(frame_index, interrupted);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(format!("Error reading frame {frame_index}: {e}").into()),
+        if !read_frame(&mut reader, &mut buffer, frame_index)? {
+            break;
         }
+
+        if clock.should_drop_frame(frame_index) {
+            frame_index += 1;
+            continue;
+        }
+
+        let current_size = size().unwrap_or((80, 60));
+        if current_size != last_size {
+            let _ = execute!(stdout, Clear(ClearType::All));
+            last_size = current_size;
+        }
+
+        let output = renderer.render(&buffer, current_size.0, current_size.1);
+
+        execute!(stdout, MoveTo(0, 0))?;
+        print!("{output}");
+        stdout.flush()?;
+
+        frame_index += 1;
+        clock.sleep_until_next_frame(frame_index, interrupted);
     }
 
     Ok(())
@@ -278,17 +289,32 @@ mod tests {
     }
 
     #[test]
-    fn test_play_truncated_frame_returns_error() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("bad_apple_trunc_play_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&temp_dir).unwrap();
-        let corrupt_file = temp_dir.join("corrupt.bin");
-        std::fs::write(&corrupt_file, b"0123456789").unwrap();
+    fn test_read_frame_truncated_returns_error() {
+        let mut buffer = vec![0u8; (WIDTH * HEIGHT) as usize];
+        let mut cursor = std::io::Cursor::new(b"0123456789".to_vec());
+        let err = read_frame(&mut cursor, &mut buffer, 42).unwrap_err();
+        assert!(
+            err.to_string().contains("Corrupt or truncated frame 42"),
+            "Error message must specify corrupt or truncated frame with index"
+        );
+    }
 
-        let result = play(corrupt_file.to_str().unwrap(), "audio.ogg", 30.0);
-        assert!(result.is_err(), "Partial/truncated frame must return Err");
+    #[test]
+    fn test_read_frame_clean_eof() {
+        let mut buffer = vec![0u8; (WIDTH * HEIGHT) as usize];
+        let mut empty = std::io::Cursor::new(Vec::new());
+        let has_frame = read_frame(&mut empty, &mut buffer, 0).unwrap();
+        assert!(!has_frame, "Empty reader must return clean EOF");
+    }
 
-        let _ = std::fs::remove_dir_all(&temp_dir);
+    #[test]
+    fn test_read_frame_success() {
+        let mut buffer = vec![0u8; (WIDTH * HEIGHT) as usize];
+        let data = vec![b'X'; (WIDTH * HEIGHT) as usize];
+        let mut cursor = std::io::Cursor::new(data);
+        let has_frame = read_frame(&mut cursor, &mut buffer, 0).unwrap();
+        assert!(has_frame, "Full frame reader must return true");
+        assert_eq!(buffer[0], b'X');
+        assert_eq!(buffer[buffer.len() - 1], b'X');
     }
 }

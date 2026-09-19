@@ -35,6 +35,7 @@ impl TerminalGuard {
         let mut out = stdout();
         enable_raw_mode()?;
         if let Err(err) = execute!(out, EnterAlternateScreen, Hide, Clear(ClearType::All)) {
+            let _ = execute!(out, Show, LeaveAlternateScreen);
             let _ = disable_raw_mode();
             return Err(err);
         }

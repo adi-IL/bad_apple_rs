@@ -20,7 +20,7 @@ pub enum Commands {
     Play {
         #[arg(short, long, default_value = "bad_apple.bin")]
         input: String,
-        #[arg(short, long, default_value = "audio.ogg")]
+        #[arg(short, long, default_value = crate::player::DEFAULT_AUDIO_PATH)]
         audio: String,
         #[arg(long, default_value_t = crate::player::DEFAULT_FPS)]
         fps: f64,

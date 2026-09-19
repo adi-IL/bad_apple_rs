@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 pub const MIN_FPS: f64 = 0.001;
 pub const MAX_FPS: f64 = 1_000_000.0;
 pub const DEFAULT_FPS: f64 = 30.0;
+pub const DEFAULT_AUDIO_PATH: &str = "audio.ogg";
 
 pub fn normalize_fps(fps: f64) -> f64 {
     if !fps.is_finite() || fps < MIN_FPS || fps > MAX_FPS {
@@ -143,7 +144,7 @@ pub fn play_with_cancel(
     };
 
     #[cfg(not(feature = "audio"))]
-    let audio_warning = if audio_path != "audio.ogg" {
+    let audio_warning = if audio_path != DEFAULT_AUDIO_PATH {
         Some(format!(
             "Warning: Custom audio path '{audio_path}' was specified, but this binary was built without the 'audio' feature."
         ))

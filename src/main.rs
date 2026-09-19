@@ -207,6 +207,9 @@ fn build_frames_with_cancel(
     out_file.flush()?;
     out_file.get_ref().sync_all()?;
     drop(out_file);
+    if interrupted.load(Ordering::Relaxed) {
+        return Err("Build aborted by user interrupt".into());
+    }
     std::fs::rename(&temp_output, output)?;
     if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         let _ = File::open(parent).and_then(|dir| dir.sync_all());

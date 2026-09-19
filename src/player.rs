@@ -108,34 +108,45 @@ pub fn play_with_cancel(
     let mut reader = BufReader::new(file);
 
     #[cfg(feature = "audio")]
-    let _audio_handle = {
+    let (_audio_handle, audio_warning) = {
         match rodio::OutputStream::try_default() {
             Ok((stream, stream_handle)) => match rodio::Sink::try_new(&stream_handle) {
                 Ok(sink) => {
                     sink.pause();
-                    if let Ok(audio_file) = File::open(audio_path) {
-                        let audio_reader = BufReader::new(audio_file);
-                        if let Ok(decoder) = rodio::Decoder::new(audio_reader) {
-                            sink.append(decoder);
-                            Some((stream, sink))
-                        } else {
-                            eprintln!("Failed to decode audio");
-                            None
+                    match File::open(audio_path) {
+                        Ok(audio_file) => {
+                            let audio_reader = BufReader::new(audio_file);
+                            match rodio::Decoder::new(audio_reader) {
+                                Ok(decoder) => {
+                                    sink.append(decoder);
+                                    (Some((stream, sink)), None)
+                                }
+                                Err(err) => (
+                                    None,
+                                    Some(format!("Failed to decode audio file '{audio_path}': {err}")),
+                                ),
+                            }
                         }
-                    } else {
-                        eprintln!("Audio file not found, playing without audio");
-                        None
+                        Err(err) => (
+                            None,
+                            Some(format!("Could not open audio file '{audio_path}': {err}")),
+                        ),
                     }
                 }
-                Err(_) => None,
+                Err(err) => (None, Some(format!("Failed to create audio sink: {err}"))),
             },
-            Err(_) => None,
+            Err(err) => (
+                None,
+                Some(format!("Failed to initialize audio output device: {err}")),
+            ),
         }
     };
 
     #[cfg(not(feature = "audio"))]
-    let _ = audio_path;
-
+    let audio_warning = {
+        let _ = audio_path;
+        Some("Notice: Built without the 'audio' feature; running in video-only mode.".to_string())
+    };
     let _guard = TerminalGuard::new()?;
     let mut stdout = std::io::stdout();
 
@@ -191,6 +202,11 @@ pub fn play_with_cancel(
 
         frame_index += 1;
         clock.sleep_until_next_frame(frame_index, interrupted);
+    }
+
+    drop(_guard);
+    if let Some(warning) = audio_warning {
+        eprintln!("{warning}");
     }
 
     Ok(())

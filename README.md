@@ -4,7 +4,7 @@ A lightweight ASCII art video and audio player in Rust that renders the Bad Appl
 
 ## Quick Start
 
-### Play Immediately (Zero C Dependencies)
+### Play Immediately (with Audio)
 
 Clone the repository and run the player directly:
 
@@ -16,17 +16,16 @@ cargo run --release -- play
 
 For the best visual presentation, resize your terminal window to at least 80 columns by 60 rows.
 
-### Play with Audio Output
-
-To enable audio playback with `rodio`, build with the `audio` feature:
-
-```bash
-cargo run --release --features audio -- play
-```
-
-> Note for Linux users: Audio support requires ALSA development headers:
+> Note for Linux users: Audio playback uses ALSA development headers:
 > `sudo apt-get install -y libasound2-dev pkg-config` (Ubuntu/Debian) or `sudo dnf install -y alsa-lib-devel pkgconf-pkg-config` (Fedora).
 
+### Play Without Audio (Zero C Dependencies)
+
+To run pure Rust video playback without external audio dependencies:
+
+```bash
+cargo run --release --no-default-features -- play
+```
 ## Features
 
 - High performance ASCII rendering at 30 frames per second
@@ -36,30 +35,30 @@ cargo run --release --features audio -- play
 - Dynamic viewport centering based on current terminal dimensions
 - Sequence gap detection during frame compilation
 - Standalone offline playback with pre-encoded binary assets included
-- Pure Rust default build requiring zero external C system libraries
-- Optional audio playback engine powered by Rodio
+- Synchronized audio playback engine powered by Rodio enabled by default
+- Pure Rust video-only build option with zero external C system libraries
 - Built-in frame conversion tool to generate binary assets from raw image sequences
 ## CLI Usage
 
 ### Play Animation
 
-Play the default animation:
+Play with synchronized audio:
 
 ```bash
 cargo run --release -- play
 ```
 
-Play with audio enabled:
+Play in video-only mode:
 
 ```bash
-cargo run --release --features audio -- play
+cargo run --release --no-default-features -- play
 ```
 
 Specify custom frame binary or audio files:
 
 ```bash
 cargo run --release -- play --input custom_frames.bin
-cargo run --release --features audio -- play --input custom_frames.bin --audio custom_audio.ogg
+cargo run --release -- play --input custom_frames.bin --audio custom_audio.ogg
 ```
 
 ### Build Frames Binary (Optional)

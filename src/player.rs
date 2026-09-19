@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 pub const MIN_FPS: f64 = 0.001;
 pub const MAX_FPS: f64 = 1_000_000.0;
 pub const DEFAULT_FPS: f64 = 30.0;
+pub const DEFAULT_AUDIO_PATH: &str = "audio.ogg";
 
 pub fn normalize_fps(fps: f64) -> f64 {
     if !fps.is_finite() || fps < MIN_FPS || fps > MAX_FPS {
@@ -108,92 +109,114 @@ pub fn play_with_cancel(
     let mut reader = BufReader::new(file);
 
     #[cfg(feature = "audio")]
-    let _audio_handle = {
+    let (_audio_handle, audio_warning) = {
         match rodio::OutputStream::try_default() {
             Ok((stream, stream_handle)) => match rodio::Sink::try_new(&stream_handle) {
                 Ok(sink) => {
                     sink.pause();
-                    if let Ok(audio_file) = File::open(audio_path) {
-                        let audio_reader = BufReader::new(audio_file);
-                        if let Ok(decoder) = rodio::Decoder::new(audio_reader) {
-                            sink.append(decoder);
-                            Some((stream, sink))
-                        } else {
-                            eprintln!("Failed to decode audio");
-                            None
+                    match File::open(audio_path) {
+                        Ok(audio_file) => {
+                            let audio_reader = BufReader::new(audio_file);
+                            match rodio::Decoder::new(audio_reader) {
+                                Ok(decoder) => {
+                                    sink.append(decoder);
+                                    (Some((stream, sink)), None)
+                                }
+                                Err(err) => (
+                                    None,
+                                    Some(format!("Failed to decode audio file '{audio_path}': {err}")),
+                                ),
+                            }
                         }
-                    } else {
-                        eprintln!("Audio file not found, playing without audio");
-                        None
+                        Err(err) => (
+                            None,
+                            Some(format!("Could not open audio file '{audio_path}': {err}")),
+                        ),
                     }
                 }
-                Err(_) => None,
+                Err(err) => (None, Some(format!("Failed to create audio sink: {err}"))),
             },
-            Err(_) => None,
+            Err(err) => (
+                None,
+                Some(format!("Failed to initialize audio output device: {err}")),
+            ),
         }
     };
 
     #[cfg(not(feature = "audio"))]
-    let _ = audio_path;
+    let audio_warning = if audio_path != DEFAULT_AUDIO_PATH {
+        Some(format!(
+            "Warning: Custom audio path '{audio_path}' was specified, but this binary was built without the 'audio' feature."
+        ))
+    } else {
+        None
+    };
+    let play_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = TerminalGuard::new()?;
+        let mut stdout = std::io::stdout();
 
-    let _guard = TerminalGuard::new()?;
-    let mut stdout = std::io::stdout();
+        let frame_size = (WIDTH * HEIGHT) as usize;
+        let mut buffer = vec![0u8; frame_size];
+        let mut last_size = size().unwrap_or((80, 60));
+        let mut renderer = FrameRenderer::new();
 
-    let frame_size = (WIDTH * HEIGHT) as usize;
-    let mut buffer = vec![0u8; frame_size];
-    let mut last_size = size().unwrap_or((80, 60));
-    let mut renderer = FrameRenderer::new();
-
-    #[cfg(feature = "audio")]
-    if let Some((_, ref sink)) = _audio_handle {
-        sink.play();
-    }
-    let clock = PlaybackClock::new(fps);
-    let mut frame_index: u64 = 0;
-
-    loop {
-        if interrupted.load(Ordering::Relaxed) {
-            return Err("Playback aborted by user interrupt".into());
+        #[cfg(feature = "audio")]
+        if let Some((_, ref sink)) = _audio_handle {
+            sink.play();
         }
+        let clock = PlaybackClock::new(fps);
+        let mut frame_index: u64 = 0;
 
-        while poll(Duration::from_millis(0))? {
-            if let Event::Key(key) = read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(());
+        loop {
+            if interrupted.load(Ordering::Relaxed) {
+                return Err("Playback aborted by user interrupt".into());
+            }
+
+            while poll(Duration::from_millis(0))? {
+                if let Event::Key(key) = read()? {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            return Ok(());
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
-        }
 
-        if !read_frame(&mut reader, &mut buffer, frame_index)? {
-            break;
-        }
+            if !read_frame(&mut reader, &mut buffer, frame_index)? {
+                break;
+            }
 
-        if clock.should_drop_frame(frame_index) {
+            if clock.should_drop_frame(frame_index) {
+                frame_index += 1;
+                continue;
+            }
+
+            let current_size = size().unwrap_or((80, 60));
+            if current_size != last_size {
+                let _ = execute!(stdout, Clear(ClearType::All));
+                last_size = current_size;
+            }
+
+            let output = renderer.render(&buffer, current_size.0, current_size.1);
+
+            execute!(stdout, MoveTo(0, 0))?;
+            print!("{output}");
+            stdout.flush()?;
+
             frame_index += 1;
-            continue;
+            clock.sleep_until_next_frame(frame_index, interrupted);
         }
 
-        let current_size = size().unwrap_or((80, 60));
-        if current_size != last_size {
-            let _ = execute!(stdout, Clear(ClearType::All));
-            last_size = current_size;
-        }
+        Ok(())
+    })();
 
-        let output = renderer.render(&buffer, current_size.0, current_size.1);
-
-        execute!(stdout, MoveTo(0, 0))?;
-        print!("{output}");
-        stdout.flush()?;
-
-        frame_index += 1;
-        clock.sleep_until_next_frame(frame_index, interrupted);
+    if let Some(warning) = audio_warning {
+        eprintln!("{warning}");
     }
 
-    Ok(())
+    play_result
 }
 
 #[cfg(test)]

@@ -143,9 +143,12 @@ pub fn play_with_cancel(
     };
 
     #[cfg(not(feature = "audio"))]
-    let audio_warning = {
-        let _ = audio_path;
-        Some("Notice: Built without the 'audio' feature; running in video-only mode.".to_string())
+    let audio_warning = if audio_path != "audio.ogg" {
+        Some(format!(
+            "Warning: Custom audio path '{audio_path}' was specified, but this binary was built without the 'audio' feature."
+        ))
+    } else {
+        None
     };
     let play_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let _guard = TerminalGuard::new()?;

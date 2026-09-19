@@ -7,7 +7,7 @@ use crossterm::{
 };
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -84,6 +84,32 @@ fn compute_padding(term_width: u16, term_height: u16, frame_w: u32, frame_h: u32
     (pad_x, pad_y)
 }
 
+struct TempFileCleanup<'a>(&'a Path, bool);
+
+impl<'a> Drop for TempFileCleanup<'a> {
+    fn drop(&mut self) {
+        if !self.1 {
+            let _ = std::fs::remove_file(self.0);
+        }
+    }
+}
+
+const MIN_FPS: f64 = 0.001;
+const DEFAULT_FPS: f64 = 30.0;
+
+fn normalize_fps(fps: f64) -> f64 {
+    if !fps.is_finite() || fps < MIN_FPS {
+        DEFAULT_FPS
+    } else {
+        fps
+    }
+}
+
+fn compute_frame_duration(fps: f64) -> Duration {
+    let effective_fps = normalize_fps(fps);
+    Duration::from_secs_f64(1.0 / effective_fps)
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -109,7 +135,18 @@ fn build_frames(frames_dir: &str, output: &str) -> Result<(), Box<dyn std::error
         std::fs::create_dir_all(parent)?;
     }
 
-    let out_file = File::create(output)?;
+    let file_name = output_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output.bin");
+
+    let temp_output = match output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(parent) => parent.join(format!(".tmp_{}_{}", std::process::id(), file_name)),
+        None => PathBuf::from(format!(".tmp_{}_{}", std::process::id(), file_name)),
+    };
+
+    let mut cleanup = TempFileCleanup(&temp_output, false);
+    let out_file = File::create(&temp_output)?;
     let mut out_file = BufWriter::new(out_file);
     let mut i = 1;
     let mut processed = 0;
@@ -141,11 +178,17 @@ fn build_frames(frames_dir: &str, output: &str) -> Result<(), Box<dyn std::error
     }
 
     out_file.flush()?;
+    drop(out_file);
+    std::fs::rename(&temp_output, output)?;
+    cleanup.1 = true;
+
     println!("Finished processing {processed} frames.");
     Ok(())
 }
 
 fn play(input: &str, audio_path: &str, fps: f64) -> Result<(), Box<dyn std::error::Error>> {
+    let frame_duration = compute_frame_duration(fps);
+
     let file = File::open(input)
         .map_err(|e| format!("Could not open frames binary file '{input}': {e}"))?;
     let mut reader = BufReader::new(file);
@@ -184,13 +227,6 @@ fn play(input: &str, audio_path: &str, fps: f64) -> Result<(), Box<dyn std::erro
 
     let frame_size = (WIDTH * HEIGHT) as usize;
     let mut buffer = vec![0u8; frame_size];
-
-    let effective_fps = if !fps.is_finite() || fps <= 0.0 {
-        30.0
-    } else {
-        fps
-    };
-    let frame_duration = Duration::from_secs_f64(1.0 / effective_fps);
     let mut last_size = size().unwrap_or((80, 60));
 
     #[cfg(feature = "audio")]
@@ -310,11 +346,36 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_fps_and_duration() {
+        assert_eq!(normalize_fps(f64::NAN), 30.0);
+        assert_eq!(normalize_fps(f64::INFINITY), 30.0);
+        assert_eq!(normalize_fps(f64::NEG_INFINITY), 30.0);
+        assert_eq!(normalize_fps(0.0), 30.0);
+        assert_eq!(normalize_fps(-10.0), 30.0);
+        assert_eq!(normalize_fps(1e-25), 30.0);
+        assert_eq!(normalize_fps(0.0001), 30.0);
+        assert_eq!(normalize_fps(30.0), 30.0);
+        assert_eq!(normalize_fps(60.0), 60.0);
+
+        let d_nan = compute_frame_duration(f64::NAN);
+        assert_eq!(d_nan, Duration::from_secs_f64(1.0 / 30.0));
+
+        let d_tiny = compute_frame_duration(1e-40);
+        assert_eq!(d_tiny, Duration::from_secs_f64(1.0 / 30.0));
+    }
+
+    #[test]
     fn test_play_nan_fps_does_not_panic() {
         let result = play("nonexistent_bad_apple.bin", "audio.ogg", f64::NAN);
         assert!(
             result.is_err(),
             "NaN fps must not panic and return Err on missing file"
+        );
+
+        let result_tiny = play("nonexistent_bad_apple.bin", "audio.ogg", 1e-40);
+        assert!(
+            result_tiny.is_err(),
+            "Subnormal fps must not panic and return Err on missing file"
         );
     }
 
@@ -353,6 +414,21 @@ mod tests {
             std::fs::read(&out_file).unwrap(),
             b"preserve me",
             "Existing output file must not be truncated when frames are missing"
+        );
+
+        let frames_dir = temp_dir.join("frames");
+        std::fs::create_dir_all(&frames_dir).unwrap();
+
+        let valid_img = image::GrayImage::from_pixel(80, 60, image::Luma([128]));
+        valid_img.save(frames_dir.join("frame_0001.png")).unwrap();
+        std::fs::write(frames_dir.join("frame_0002.png"), b"not a valid png file").unwrap();
+
+        let result_mid = build_frames(frames_dir.to_str().unwrap(), out_file.to_str().unwrap());
+        assert!(result_mid.is_err(), "Corrupt frame must return an Err");
+        assert_eq!(
+            std::fs::read(&out_file).unwrap(),
+            b"preserve me",
+            "Existing output file must not be truncated when mid-processing error occurs"
         );
 
         let _ = std::fs::remove_dir_all(&temp_dir);

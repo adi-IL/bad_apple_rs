@@ -1,4 +1,4 @@
-use crate::render::{HEIGHT, WIDTH, render_frame};
+use crate::render::{FrameRenderer, HEIGHT, WIDTH};
 use crate::terminal::TerminalGuard;
 use crossterm::{
     cursor::MoveTo,
@@ -83,6 +83,7 @@ pub fn play_with_cancel(
     let frame_size = (WIDTH * HEIGHT) as usize;
     let mut buffer = vec![0u8; frame_size];
     let mut last_size = size().unwrap_or((80, 60));
+    let mut renderer = FrameRenderer::new();
 
     #[cfg(feature = "audio")]
     if let Some((_, ref sink)) = _audio_handle {
@@ -117,7 +118,7 @@ pub fn play_with_cancel(
                     last_size = current_size;
                 }
 
-                let output = render_frame(&buffer, current_size.0, current_size.1);
+                let output = renderer.render(&buffer, current_size.0, current_size.1);
 
                 execute!(stdout, MoveTo(0, 0))?;
                 print!("{output}");

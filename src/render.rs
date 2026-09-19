@@ -26,30 +26,47 @@ pub fn compute_padding(
     (pad_x, pad_y)
 }
 
-pub fn render_frame(buffer: &[u8], term_width: u16, term_height: u16) -> String {
-    let frame_size = (WIDTH * HEIGHT) as usize;
-    let (pad_x, pad_y) = compute_padding(term_width, term_height, WIDTH, HEIGHT);
+#[derive(Debug, Default)]
+pub struct FrameRenderer {
+    buffer: String,
+}
 
-    let mut output =
-        String::with_capacity(frame_size + (term_height as usize * term_width as usize));
-
-    for _ in 0..pad_y {
-        output.push_str("\r\n");
+impl FrameRenderer {
+    pub fn new() -> Self {
+        Self {
+            buffer: String::with_capacity((WIDTH * HEIGHT) as usize + (80 * 25)),
+        }
     }
 
-    for y in 0..HEIGHT {
-        for _ in 0..pad_x {
-            output.push(' ');
+    pub fn render(&mut self, buffer: &[u8], term_width: u16, term_height: u16) -> &str {
+        self.buffer.clear();
+        let (pad_x, pad_y) = compute_padding(term_width, term_height, WIDTH, HEIGHT);
+
+        for _ in 0..pad_y {
+            self.buffer.push_str("\r\n");
         }
 
-        let start = (y * WIDTH) as usize;
-        let end = start + WIDTH as usize;
-        let line = std::str::from_utf8(&buffer[start..end]).unwrap_or("");
-        output.push_str(line);
-        output.push_str("\r\n");
+        for y in 0..HEIGHT {
+            for _ in 0..pad_x {
+                self.buffer.push(' ');
+            }
+
+            let start = (y * WIDTH) as usize;
+            let end = start + WIDTH as usize;
+            if let Some(slice) = buffer.get(start..end) {
+                let line = std::str::from_utf8(slice).unwrap_or("");
+                self.buffer.push_str(line);
+            }
+            self.buffer.push_str("\r\n");
+        }
+
+        &self.buffer
     }
 
-    output
+    #[cfg(test)]
+    pub fn capacity(&self) -> usize {
+        self.buffer.capacity()
+    }
 }
 
 #[cfg(test)]
@@ -78,11 +95,27 @@ mod tests {
 
     #[test]
     fn test_render_frame_contains_carriage_returns() {
+        let mut renderer = FrameRenderer::new();
         let dummy = vec![b' '; (WIDTH * HEIGHT) as usize];
-        let frame = render_frame(&dummy, 80, 60);
+        let frame = renderer.render(&dummy, 80, 60);
         assert!(
             frame.contains("\r\n"),
             "Rendered frames in raw mode must contain \\r\\n"
         );
+    }
+
+    #[test]
+    fn test_frame_renderer_reuses_capacity() {
+        let mut renderer = FrameRenderer::new();
+        let dummy = vec![b' '; (WIDTH * HEIGHT) as usize];
+
+        renderer.render(&dummy, 80, 60);
+        let initial_capacity = renderer.capacity();
+        assert!(initial_capacity >= (WIDTH * HEIGHT) as usize);
+
+        for _ in 0..10 {
+            renderer.render(&dummy, 80, 60);
+            assert_eq!(renderer.capacity(), initial_capacity);
+        }
     }
 }

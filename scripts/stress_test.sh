@@ -10,9 +10,8 @@ set -euo pipefail
 # 5. Terminal signal recovery (SIGINT) and non-blocking abort
 # 6. Feature permutations (default audio vs pure Rust video-only)
 #
-# Requirements: Linux with util-linux `script` supporting -qec (PTY allocation),
-# and Bash (this script). Paths must not contain newlines.
-# macOS/BSD `script` lacks -e/-c; this suite is intentionally Linux-CI oriented.
+# Requirements: Bash + python3 (stdlib `pty` for portable PTY allocation).
+# Paths must not contain newlines.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT_DIR/target/release/bad_apple"
@@ -25,16 +24,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! command -v script >/dev/null 2>&1; then
-    echo "error: util-linux script not found on PATH (needed for PTY play directives)." >&2
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "error: python3 not found on PATH (needed for PTY play directives and PNG fixtures)." >&2
     exit 127
 fi
 
-# POSIX single-quote escape for embedding args inside `bash -c '...'`.
-posix_sq() {
-    local s=${1//\'/\'\\\'\'}
-    printf "'%s'" "$s"
-}
+# Portable PTY runner: argv after -c is the command to spawn (Linux + macOS/BSD).
+# Prefer os.waitstatus_to_exitcode (3.9+); fall back to WIF* helpers.
+PTY_RUN=$'import os, pty, sys\nargv = sys.argv[1:]\nstatus = pty.spawn(argv)\nif hasattr(os, "waitstatus_to_exitcode"):\n    code = os.waitstatus_to_exitcode(status)\nelif os.WIFSIGNALED(status):\n    code = 128 + os.WTERMSIG(status)\nelif os.WIFEXITED(status):\n    code = os.WEXITSTATUS(status)\nelse:\n    code = 1\nsys.exit(code)\n'
 
 echo "=== Building bad_apple binary in release mode ==="
 cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml"
@@ -61,19 +58,12 @@ run_directive() {
     fi
 }
 
-# Run a play command under a Linux util-linux PTY with POSIX-safe quoting.
-# Forces bash -c so quoting is not host-shell dependent.
+# Run a play command under a portable Python PTY (no util-linux `script` / shell escaping).
 run_play_pty() {
     local name="$1"
     local expected_exit="$2"
     shift 2
-    local bash_cmd=""
-    local arg
-    for arg in "$@"; do
-        bash_cmd+="$(posix_sq "$arg") "
-    done
-    run_directive "$name" "$expected_exit" \
-        script -qec "bash -c $(posix_sq "$bash_cmd")" /dev/null
+    run_directive "$name" "$expected_exit" python3 -c "$PTY_RUN" "$@"
 }
 
 echo ""
@@ -180,7 +170,7 @@ echo ""
 echo "=== Directive 3b: Missing Audio Fallback (real frames) ==="
 run_play_pty "Missing audio warns and continues" 0 \
     "$BIN" play --input "$WORK_DIR/valid_built.bin" --audio "$WORK_DIR/missing.ogg"
-# Under `script`, app stderr is captured on the PTY (out.log), not process stderr.
+# Under pty.spawn, app stderr is typically copied onto the parent stdout stream (out.log).
 if ! grep -Eiq "Could not open audio|Failed to initialize audio|Failed to decode audio|Failed to create audio|audio" "$WORK_DIR/out.log" "$WORK_DIR/err.log"; then
     echo "Directive: Missing audio warning present in PTY output ... FAIL"
     FAIL=$((FAIL + 1))
@@ -194,32 +184,29 @@ echo "=== Directive 5: Terminal signal recovery (SIGINT) ==="
 echo -n "Directive: SIGINT aborts playback ... "
 set +e
 # Use MIN_FPS so the 2-frame fixture stays alive long enough to interrupt.
-# SIGINT must hit the bad_apple child (ctrlc handler). Killing `script` alone can exit 0.
-PLAY_INNER="$(posix_sq "$BIN") play --input $(posix_sq "$WORK_DIR/valid_built.bin") --fps 0.001"
-script -qec "bash -c $(posix_sq "$PLAY_INNER")" /dev/null \
+# SIGINT must hit the bad_apple child (ctrlc handler). Killing the PTY parent alone can exit 0.
+python3 -c "$PTY_RUN" "$BIN" play --input "$WORK_DIR/valid_built.bin" --fps 0.001 \
     >"$WORK_DIR/sig_out.log" 2>"$WORK_DIR/sig_err.log" &
-spid=$!
+ppid=$!
 bpid=""
-for _ in $(seq 1 30); do
-    shpid=$(ps --ppid "$spid" -o pid= 2>/dev/null | tr -d " " | head -1)
-    if [[ -n "${shpid:-}" ]]; then
-        cand=$(ps --ppid "$shpid" -o pid= 2>/dev/null | tr -d " " | head -1)
-        if [[ -n "${cand:-}" ]]; then
-            bpid=$cand
-            break
-        fi
+for _ in $(seq 1 40); do
+    # pgrep -P works on Linux and macOS; prefer the direct child of the python PTY runner.
+    cand=$(pgrep -P "$ppid" 2>/dev/null | head -1 || true)
+    if [[ -n "${cand:-}" ]]; then
+        bpid=$cand
+        break
     fi
     sleep 0.05
 done
 if [[ -n "${bpid:-}" ]]; then
     kill -INT "$bpid" 2>/dev/null || true
 else
-    kill -INT "$spid" 2>/dev/null || true
+    kill -INT "$ppid" 2>/dev/null || true
 fi
-wait "$spid"
+wait "$ppid"
 sig_code=$?
 set -e
-# 130 = interrupt path from main; also accept aborted message in PTY output
+# 130 = interrupt path from main / waitstatus_to_exitcode; also accept aborted message in PTY output
 if [[ "$sig_code" -eq 130 ]] || grep -Eq "Playback aborted by user interrupt" "$WORK_DIR/sig_out.log" "$WORK_DIR/sig_err.log" 2>/dev/null; then
     echo "PASS (exit $sig_code)"
     PASS=$((PASS + 1))

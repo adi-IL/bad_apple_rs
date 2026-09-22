@@ -4,14 +4,15 @@ set -euo pipefail
 # Comprehensive stress-test suite for bad_apple_rs across all directives.
 # Directives tested:
 # 1. Corrupt and malformed binary frame streams
-# 2. Extreme CLI bounds (subnormal, negative, zero, infinite FPS)
+# 2. Extreme CLI bounds (subnormal, negative, zero, non-finite FPS)
 # 3. Missing asset fallbacks (audio and binary frames)
 # 4. Sequence gap detection and builder invariants
-# 5. Terminal signal recovery and non-blocking abort
+# 5. Terminal signal recovery (SIGINT) and non-blocking abort
 # 6. Feature permutations (default audio vs pure Rust video-only)
 #
-# Requirements: Linux with util-linux `script` supporting -qec (PTY allocation).
-# macOS/BSD `script` lacks -e/-c and will fail these play directives.
+# Requirements: Linux with util-linux `script` supporting -qec (PTY allocation),
+# and Bash (this script). Paths must not contain newlines.
+# macOS/BSD `script` lacks -e/-c; this suite is intentionally Linux-CI oriented.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT_DIR/target/release/bad_apple"
@@ -24,8 +25,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Shell-escape a path/arg for embedding inside a `script -qec '...'` string.
-sq() { printf '%q' "$1"; }
+if ! command -v script >/dev/null 2>&1; then
+    echo "error: util-linux script not found on PATH (needed for PTY play directives)." >&2
+    exit 127
+fi
+
+# POSIX single-quote escape for embedding args inside `bash -c '...'`.
+posix_sq() {
+    local s=${1//\'/\'\\\'\'}
+    printf "'%s'" "$s"
+}
 
 echo "=== Building bad_apple binary in release mode ==="
 cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml"
@@ -52,17 +61,19 @@ run_directive() {
     fi
 }
 
-# Run a play command under a Linux util-linux PTY with safely quoted paths.
+# Run a play command under a Linux util-linux PTY with POSIX-safe quoting.
+# Forces bash -c so quoting is not host-shell dependent.
 run_play_pty() {
     local name="$1"
     local expected_exit="$2"
     shift 2
-    local cmd=""
+    local bash_cmd=""
     local arg
     for arg in "$@"; do
-        cmd+="$(sq "$arg") "
+        bash_cmd+="$(posix_sq "$arg") "
     done
-    run_directive "$name" "$expected_exit" script -qec "$cmd" /dev/null
+    run_directive "$name" "$expected_exit" \
+        script -qec "bash -c $(posix_sq "$bash_cmd")" /dev/null
 }
 
 echo ""
@@ -103,20 +114,27 @@ run_play_pty "Zero FPS normalization" 0 \
 run_play_pty "Negative FPS normalization" 0 \
     "$BIN" play --input "$WORK_DIR/empty.bin" --fps -30
 
-# 2c. Subnormal tiny FPS
-run_play_pty "Subnormal FPS normalization" 0 \
+# 2c. Tiny finite FPS
+run_play_pty "Tiny FPS normalization" 0 \
     "$BIN" play --input "$WORK_DIR/empty.bin" --fps 1e-30
 
-# 2d. Huge FPS
+# 2d. True subnormal FPS
+run_play_pty "Subnormal FPS normalization" 0 \
+    "$BIN" play --input "$WORK_DIR/empty.bin" --fps 1e-320
+
+# 2e. Huge FPS
 run_play_pty "Astronomical FPS normalization" 0 \
     "$BIN" play --input "$WORK_DIR/empty.bin" --fps 9999999999
 
-echo ""
-echo "=== Directive 3: Missing Audio Fallback ==="
+# 2f/2g. Non-finite FPS (parser-supported)
+run_play_pty "Infinite FPS normalization" 0 \
+    "$BIN" play --input "$WORK_DIR/empty.bin" --fps inf
 
-# Missing audio does not crash video playback; it cleanly logs warning and proceeds
-run_play_pty "Missing audio gracefully falls back" 0 \
-    "$BIN" play --input "$WORK_DIR/empty.bin" --audio "$WORK_DIR/missing.ogg"
+run_play_pty "NaN FPS normalization" 0 \
+    "$BIN" play --input "$WORK_DIR/empty.bin" --fps NaN
+
+echo ""
+echo "=== Directive 3: Missing Audio Fallback (deferred until valid frames) ==="
 
 echo ""
 echo "=== Directive 4: Frame Sequence Builder Invariants ==="
@@ -159,7 +177,60 @@ run_directive "Builder valid sequential frames" 0 \
     "$BIN" build --frames-dir "$FRAMES_VALID_DIR" --output "$WORK_DIR/valid_built.bin"
 
 echo ""
-echo "=== Directive 5: Feature Permutations (No-default features) ==="
+echo "=== Directive 3b: Missing Audio Fallback (real frames) ==="
+run_play_pty "Missing audio warns and continues" 0 \
+    "$BIN" play --input "$WORK_DIR/valid_built.bin" --audio "$WORK_DIR/missing.ogg"
+# Under `script`, app stderr is captured on the PTY (out.log), not process stderr.
+if ! grep -Eiq "Could not open audio|Failed to initialize audio|Failed to decode audio|Failed to create audio|audio" "$WORK_DIR/out.log" "$WORK_DIR/err.log"; then
+    echo "Directive: Missing audio warning present in PTY output ... FAIL"
+    FAIL=$((FAIL + 1))
+else
+    echo "Directive: Missing audio warning present in PTY output ... PASS"
+    PASS=$((PASS + 1))
+fi
+
+echo ""
+echo "=== Directive 5: Terminal signal recovery (SIGINT) ==="
+echo -n "Directive: SIGINT aborts playback ... "
+set +e
+# Use MIN_FPS so the 2-frame fixture stays alive long enough to interrupt.
+# SIGINT must hit the bad_apple child (ctrlc handler). Killing `script` alone can exit 0.
+PLAY_INNER="$(posix_sq "$BIN") play --input $(posix_sq "$WORK_DIR/valid_built.bin") --fps 0.001"
+script -qec "bash -c $(posix_sq "$PLAY_INNER")" /dev/null \
+    >"$WORK_DIR/sig_out.log" 2>"$WORK_DIR/sig_err.log" &
+spid=$!
+bpid=""
+for _ in $(seq 1 30); do
+    shpid=$(ps --ppid "$spid" -o pid= 2>/dev/null | tr -d " " | head -1)
+    if [[ -n "${shpid:-}" ]]; then
+        cand=$(ps --ppid "$shpid" -o pid= 2>/dev/null | tr -d " " | head -1)
+        if [[ -n "${cand:-}" ]]; then
+            bpid=$cand
+            break
+        fi
+    fi
+    sleep 0.05
+done
+if [[ -n "${bpid:-}" ]]; then
+    kill -INT "$bpid" 2>/dev/null || true
+else
+    kill -INT "$spid" 2>/dev/null || true
+fi
+wait "$spid"
+sig_code=$?
+set -e
+# 130 = interrupt path from main; also accept aborted message in PTY output
+if [[ "$sig_code" -eq 130 ]] || grep -Eq "Playback aborted by user interrupt" "$WORK_DIR/sig_out.log" "$WORK_DIR/sig_err.log" 2>/dev/null; then
+    echo "PASS (exit $sig_code)"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL (exit $sig_code)"
+    tail -c 400 "$WORK_DIR/sig_out.log" || true
+    FAIL=$((FAIL + 1))
+fi
+
+echo ""
+echo "=== Directive 6: Feature Permutations (No-default features) ==="
 
 echo "Building video-only (no-default-features) target..."
 cargo build --release --no-default-features --manifest-path "$ROOT_DIR/Cargo.toml"

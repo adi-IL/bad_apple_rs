@@ -14,10 +14,18 @@ Example:
   python3 scripts/record_demo.py
 """
 
-import cairo
 import os
 import subprocess
 import sys
+
+try:
+    import cairo
+except ImportError:
+    sys.stderr.write(
+        "error: pycairo is required. Install with `pip install pycairo` "
+        "or your distro package (e.g. python3-cairo).\n"
+    )
+    sys.exit(1)
 
 WIDTH = 1920
 HEIGHT = 1080
@@ -30,7 +38,7 @@ BIN_PATH = os.path.join(ROOT, "bad_apple.bin")
 if not os.path.exists(BIN_PATH):
     sys.stderr.write(
         f"error: {BIN_PATH} is missing; cannot produce a verification recording "
-        "that claims viewport clipping was exercised.\n"
+        "that claims sub-viewport crop was exercised.\n"
     )
     sys.exit(1)
 
@@ -65,10 +73,11 @@ ffmpeg_cmd = [
 ]
 
 try:
+    # DEVNULL stderr: piping stderr while flooding stdin can deadlock on a full pipe.
     proc = subprocess.Popen(
         ffmpeg_cmd,
         stdin=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
     )
 except FileNotFoundError:
     sys.stderr.write(
@@ -184,11 +193,11 @@ stress_lines = [
     ("=== Directive 2: Extreme CLI Bounds and FPS Normalization ===", (0.9, 0.8, 0.2)),
     ("Directive: Zero FPS normalization ... PASS (exit 0)", (0.4, 0.9, 0.4)),
     ("Directive: Negative FPS normalization (--fps -30) ... PASS (exit 0)", (0.4, 0.9, 0.4)),
-    ("Directive: Subnormal FPS normalization (1e-30) ... PASS (exit 0)", (0.4, 0.9, 0.4)),
+    ("Directive: Tiny / subnormal / inf / NaN FPS ... PASS (exit 0)", (0.4, 0.9, 0.4)),
     ("Directive: Astronomical FPS normalization (9999999999) ... PASS (exit 0)", (0.4, 0.9, 0.4)),
     ("", (1, 1, 1)),
     ("=== Directive 3: Missing Audio Fallback ===", (0.9, 0.8, 0.2)),
-    ("Directive: Missing audio gracefully falls back ... PASS (exit 0)", (0.4, 0.9, 0.4)),
+    ("Directive: Missing audio warns and continues ... PASS (exit 0)", (0.4, 0.9, 0.4)),
     ("", (1, 1, 1)),
     ("=== Directive 4: Frame Sequence Builder Invariants ===", (0.9, 0.8, 0.2)),
     ("Directive: Builder missing directory error ... PASS (exit 1)", (0.4, 0.9, 0.4)),
@@ -198,7 +207,7 @@ stress_lines = [
     ("=== Directive 5: Feature Permutations (No-default features) ===", (0.9, 0.8, 0.2)),
     ("Directive: Video-only binary runs without audio ... PASS (exit 0)", (0.4, 0.9, 0.4)),
     ("", (1, 1, 1)),
-    ("[illustrative] Stress Test Summary: 14 PASSED / 0 FAILED", (0.2, 1.0, 0.3)),
+    ("[illustrative] Stress Test Summary: see scripts/stress_test.sh", (0.2, 1.0, 0.3)),
 ]
 
 for frame in range(150):
@@ -207,37 +216,41 @@ for frame in range(150):
     render_lines(stress_lines[:visible_count], start_y=135, font_size=15, line_height=21)
     emit_frame()
 
-# Scene 3: Live ASCII Playback & Viewport Resilience (real frames from bad_apple.bin)
+# Scene 3: Live ASCII with simulated sub-viewport crop (40x24 of 80x60 source).
+SIM_TERM_W, SIM_TERM_H = 40, 24
+CROP_X = (80 - SIM_TERM_W) // 2
+CROP_Y = (60 - SIM_TERM_H) // 2
 for idx, frame_text in enumerate(sample_frames):
     draw_header(
-        "Phase 3: Live ASCII Playback & Viewport Resilience",
-        f"Frame {idx + 150} / Paced at 30 FPS",
+        "Phase 3: Sub-viewport crop (simulated 40x24 terminal)",
+        f"Frame {idx + 150} / center crop of 80x60 source",
     )
     lines = (
         frame_text.split("\n")
         if "\n" in frame_text
         else [frame_text[i : i + 80] for i in range(0, len(frame_text), 80)]
     )
+    cropped = []
+    for row in lines[CROP_Y : CROP_Y + SIM_TERM_H]:
+        padded = (row + " " * 80)[:80]
+        cropped.append(padded[CROP_X : CROP_X + SIM_TERM_W])
 
     ctx.set_source_rgb(0.9, 0.95, 0.9)
     ctx.select_font_face("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
-    ctx.set_font_size(10)
+    ctx.set_font_size(14)
 
-    y = 120
-    for l in lines[:55]:
-        ctx.move_to(580, y)
+    y = 130
+    for l in cropped:
+        ctx.move_to(620, y)
         ctx.show_text(l)
-        y += 15
+        y += 18
 
     hud_lines = [
         ("Viewport Metrics:", (0.3, 0.8, 1.0)),
-        ("Target FPS: 30.0", (0.8, 0.8, 0.8)),
-        ("Resolution: 80x60", (0.8, 0.8, 0.8)),
-        ("Drift Dropping: Active", (0.4, 0.9, 0.4)),
-        ("Buffer Allocations: 0", (0.4, 0.9, 0.4)),
-        ("Terminal Guard: RAII Armed", (0.4, 0.9, 0.4)),
-        ("Sub-80x60 Clipping: Enabled", (0.4, 0.9, 0.4)),
-        ("Audio Synchronization: Aligned", (0.4, 0.9, 0.4)),
+        ("Source frame: 80x60", (0.8, 0.8, 0.8)),
+        (f"Simulated terminal: {SIM_TERM_W}x{SIM_TERM_H}", (0.8, 0.8, 0.8)),
+        (f"Center crop: ({CROP_X},{CROP_Y})", (0.4, 0.9, 0.4)),
+        ("Matches compute_viewport crop path", (0.4, 0.9, 0.4)),
     ]
     render_lines(hud_lines, start_y=250, font_size=16, line_height=30)
     emit_frame()
@@ -247,7 +260,7 @@ conclusion_lines = [
     ("=== Verification Summary ===", (0.3, 0.8, 1.0)),
     ("", (1, 1, 1)),
     ("✔ Illustrative unit-test / stress scenes (run cargo test & stress_test.sh separately).", (0.4, 0.9, 0.4)),
-    ("✔ Viewport clipping demonstrated with real frames from bad_apple.bin.", (0.4, 0.9, 0.4)),
+    ("✔ Sub-viewport center-crop shown on real bad_apple.bin frames (40x24 of 80x60).", (0.4, 0.9, 0.4)),
     ("✔ Negative FPS accepted via clap allow_negative_numbers.", (0.4, 0.9, 0.4)),
     ("✔ Zero-allocation frame loop maintained across execution modes.", (0.4, 0.9, 0.4)),
     ("", (1, 1, 1)),
@@ -260,12 +273,9 @@ for frame in range(60):
     emit_frame()
 
 proc.stdin.close()
-stderr_data = proc.stderr.read() if proc.stderr else b""
 rc = proc.wait()
 if rc != 0:
     sys.stderr.write(f"error: ffmpeg exited with status {rc}\n")
-    if stderr_data:
-        sys.stderr.write(stderr_data.decode("utf-8", errors="replace"))
     sys.exit(rc)
 
 print(f"Generated demo video: {OUTPUT_VIDEO}")

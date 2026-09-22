@@ -157,7 +157,14 @@ pub fn play_with_cancel(
 
         let frame_size = (WIDTH * HEIGHT) as usize;
         let mut buffer = vec![0u8; frame_size];
-        let mut last_size = size().unwrap_or((80, 60));
+        let mut last_size = {
+            let raw = size().unwrap_or((0, 0));
+            if raw.0 == 0 || raw.1 == 0 {
+                (0, 0)
+            } else {
+                raw
+            }
+        };
         let mut renderer = FrameRenderer::new();
 
         #[cfg(feature = "audio")]
@@ -193,9 +200,10 @@ pub fn play_with_cancel(
                 continue;
             }
 
-            let raw_size = size().unwrap_or((80, 60));
+            let raw_size = size().unwrap_or(last_size);
             let current_size = if raw_size.0 == 0 || raw_size.1 == 0 {
-                (80, 60)
+                // Reuse last known-good size; (0,0) is safe via compute_viewport.
+                last_size
             } else {
                 raw_size
             };

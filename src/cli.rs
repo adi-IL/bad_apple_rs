@@ -22,7 +22,7 @@ pub enum Commands {
         input: String,
         #[arg(short, long, default_value = crate::player::DEFAULT_AUDIO_PATH)]
         audio: String,
-        #[arg(long, default_value_t = crate::player::DEFAULT_FPS, allow_hyphen_values = true)]
+        #[arg(long, default_value_t = crate::player::DEFAULT_FPS, allow_negative_numbers = true)]
         fps: f64,
     },
 }

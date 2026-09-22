@@ -34,7 +34,7 @@ pub fn compute_viewport(
     frame_w: u32,
     frame_h: u32,
 ) -> ViewportConfig {
-    if term_width == 0 || term_height == 0 {
+    if term_width == 0 || term_height == 0 || frame_w == 0 || frame_h == 0 {
         return ViewportConfig {
             pad_x: 0,
             pad_y: 0,
@@ -45,22 +45,22 @@ pub fn compute_viewport(
         };
     }
 
-    let (pad_x, crop_x, visible_w) = if term_width >= frame_w as u16 {
-        ((term_width - frame_w as u16) / 2, 0, frame_w as usize)
+    let (pad_x, crop_x, visible_w) = if (term_width as u32) >= frame_w {
+        (((term_width as u32 - frame_w) / 2) as u16, 0, frame_w as usize)
     } else {
         (
             0,
-            ((frame_w as u16 - term_width) / 2) as usize,
+            ((frame_w - term_width as u32) / 2) as usize,
             term_width as usize,
         )
     };
 
-    let (pad_y, crop_y, visible_h) = if term_height >= frame_h as u16 {
-        ((term_height - frame_h as u16) / 2, 0, frame_h as usize)
+    let (pad_y, crop_y, visible_h) = if (term_height as u32) >= frame_h {
+        (((term_height as u32 - frame_h) / 2) as u16, 0, frame_h as usize)
     } else {
         (
             0,
-            ((frame_h as u16 - term_height) / 2) as usize,
+            ((frame_h - term_height as u32) / 2) as usize,
             term_height as usize,
         )
     };
@@ -113,17 +113,15 @@ impl FrameRenderer {
             let row_start = (y * WIDTH as usize) + vp.crop_x;
             let row_end = row_start + vp.visible_w;
             if let Some(slice) = buffer.get(row_start..row_end) {
-                if let Ok(line) = std::str::from_utf8(slice) {
-                    self.buffer.push_str(line);
-                } else {
-                    for &b in slice {
-                        let ch = if b.is_ascii_graphic() || b == b' ' {
-                            b as char
-                        } else {
-                            ' '
-                        };
-                        self.buffer.push(ch);
-                    }
+                // Frames are ASCII-by-construction; non-graphic bytes always
+                // indicate corruption (including valid-UTF-8 control chars).
+                for &b in slice {
+                    let ch = if b.is_ascii_graphic() || b == b' ' {
+                        b as char
+                    } else {
+                        ' '
+                    };
+                    self.buffer.push(ch);
                 }
             }
             if i + 1 < vp.visible_h || vp.pad_y > 0 {
@@ -206,6 +204,10 @@ mod tests {
         assert_eq!(vp_zero.visible_w, 0);
         assert_eq!(vp_zero.visible_h, 0);
 
+        let vp_zero_frame = compute_viewport(80, 60, 0, 0);
+        assert_eq!(vp_zero_frame.visible_w, 0);
+        assert_eq!(vp_zero_frame.visible_h, 0);
+
         let vp_small = compute_viewport(40, 20, 80, 60);
         assert_eq!(vp_small.visible_w, 40);
         assert_eq!(vp_small.crop_x, 20);
@@ -221,6 +223,15 @@ mod tests {
         assert_eq!(vp_large.crop_y, 0);
         assert_eq!(vp_large.pad_x, 20);
         assert_eq!(vp_large.pad_y, 10);
+
+        // frame_w >= 65536 must not truncate via `as u16`
+        let vp_huge = compute_viewport(80, 60, 65536, 70000);
+        assert_eq!(vp_huge.visible_w, 80);
+        assert_eq!(vp_huge.visible_h, 60);
+        assert_eq!(vp_huge.pad_x, 0);
+        assert_eq!(vp_huge.pad_y, 0);
+        assert_eq!(vp_huge.crop_x, (65536 - 80) / 2);
+        assert_eq!(vp_huge.crop_y, (70000 - 60) / 2);
     }
 
     #[test]
@@ -245,5 +256,24 @@ mod tests {
         let first_line = frame.lines().next().unwrap();
         assert_eq!(first_line.len(), 80);
         assert!(first_line.starts_with("  ##"));
+    }
+
+    #[test]
+    fn test_render_sanitizes_ascii_control_bytes() {
+        let mut renderer = FrameRenderer::default();
+        let mut dummy = vec![b'#'; (WIDTH * HEIGHT) as usize];
+        dummy[0] = b'\n';
+        dummy[1] = b'\r';
+        dummy[2] = 0x1B; // ESC
+        dummy[3] = 0x07; // BEL
+        dummy[4] = b'\t';
+        let frame = renderer.render(&dummy, 80, 60);
+        let first_line = frame.split("\r\n").next().unwrap();
+        assert_eq!(first_line.len(), 80);
+        assert!(
+            first_line.starts_with("     #"),
+            "control bytes must become spaces: {first_line:?}"
+        );
+        assert!(!first_line.chars().any(|c| c.is_control()));
     }
 }

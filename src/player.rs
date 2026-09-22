@@ -193,7 +193,12 @@ pub fn play_with_cancel(
                 continue;
             }
 
-            let current_size = size().unwrap_or((80, 60));
+            let raw_size = size().unwrap_or((80, 60));
+            let current_size = if raw_size.0 == 0 || raw_size.1 == 0 {
+                (80, 60)
+            } else {
+                raw_size
+            };
             if current_size != last_size {
                 let _ = execute!(stdout, Clear(ClearType::All));
                 last_size = current_size;

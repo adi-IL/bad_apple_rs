@@ -7,23 +7,72 @@ pub fn pixel_to_ascii(pixel: u8) -> u8 {
     ASCII_CHARS[idx]
 }
 
+#[allow(dead_code)]
 pub fn compute_padding(
     term_width: u16,
     term_height: u16,
     frame_w: u32,
     frame_h: u32,
 ) -> (u16, u16) {
-    let pad_x = if term_width > frame_w as u16 {
-        (term_width - frame_w as u16) / 2
+    let vp = compute_viewport(term_width, term_height, frame_w, frame_h);
+    (vp.pad_x, vp.pad_y)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewportConfig {
+    pub pad_x: u16,
+    pub pad_y: u16,
+    pub crop_x: usize,
+    pub crop_y: usize,
+    pub visible_w: usize,
+    pub visible_h: usize,
+}
+
+pub fn compute_viewport(
+    term_width: u16,
+    term_height: u16,
+    frame_w: u32,
+    frame_h: u32,
+) -> ViewportConfig {
+    if term_width == 0 || term_height == 0 {
+        return ViewportConfig {
+            pad_x: 0,
+            pad_y: 0,
+            crop_x: 0,
+            crop_y: 0,
+            visible_w: 0,
+            visible_h: 0,
+        };
+    }
+
+    let (pad_x, crop_x, visible_w) = if term_width >= frame_w as u16 {
+        ((term_width - frame_w as u16) / 2, 0, frame_w as usize)
     } else {
-        0
+        (
+            0,
+            ((frame_w as u16 - term_width) / 2) as usize,
+            term_width as usize,
+        )
     };
-    let pad_y = if term_height > frame_h as u16 {
-        (term_height - frame_h as u16) / 2
+
+    let (pad_y, crop_y, visible_h) = if term_height >= frame_h as u16 {
+        ((term_height - frame_h as u16) / 2, 0, frame_h as usize)
     } else {
-        0
+        (
+            0,
+            ((frame_h as u16 - term_height) / 2) as usize,
+            term_height as usize,
+        )
     };
-    (pad_x, pad_y)
+
+    ViewportConfig {
+        pad_x,
+        pad_y,
+        crop_x,
+        crop_y,
+        visible_w,
+        visible_h,
+    }
 }
 
 #[derive(Debug)]
@@ -46,24 +95,38 @@ impl FrameRenderer {
 
     pub fn render(&mut self, buffer: &[u8], term_width: u16, term_height: u16) -> &str {
         self.buffer.clear();
-        let (pad_x, pad_y) = compute_padding(term_width, term_height, WIDTH, HEIGHT);
+        let vp = compute_viewport(term_width, term_height, WIDTH, HEIGHT);
+        if vp.visible_w == 0 || vp.visible_h == 0 {
+            return &self.buffer;
+        }
 
-        for _ in 0..pad_y {
+        for _ in 0..vp.pad_y {
             self.buffer.push_str("\r\n");
         }
 
-        for y in 0..HEIGHT {
-            for _ in 0..pad_x {
+        for i in 0..vp.visible_h {
+            let y = vp.crop_y + i;
+            for _ in 0..vp.pad_x {
                 self.buffer.push(' ');
             }
 
-            let start = (y * WIDTH) as usize;
-            let end = start + WIDTH as usize;
-            if let Some(slice) = buffer.get(start..end) {
-                let line = std::str::from_utf8(slice).unwrap_or("");
-                self.buffer.push_str(line);
+            let row_start = (y * WIDTH as usize) + vp.crop_x;
+            let row_end = row_start + vp.visible_w;
+            if let Some(slice) = buffer.get(row_start..row_end) {
+                if let Ok(line) = std::str::from_utf8(slice) {
+                    self.buffer.push_str(line);
+                } else {
+                    for &b in slice {
+                        let ch = if b.is_ascii_graphic() || b == b' ' {
+                            b as char
+                        } else {
+                            ' '
+                        };
+                        self.buffer.push(ch);
+                    }
+                }
             }
-            if y + 1 < HEIGHT || pad_y > 0 {
+            if i + 1 < vp.visible_h || vp.pad_y > 0 {
                 self.buffer.push_str("\r\n");
             }
         }
@@ -135,5 +198,52 @@ mod tests {
             !frame.ends_with("\r\n"),
             "Exact 80x60 rendering must not end with \\r\\n to avoid scroll"
         );
+    }
+
+    #[test]
+    fn test_compute_viewport_edge_cases() {
+        let vp_zero = compute_viewport(0, 0, 80, 60);
+        assert_eq!(vp_zero.visible_w, 0);
+        assert_eq!(vp_zero.visible_h, 0);
+
+        let vp_small = compute_viewport(40, 20, 80, 60);
+        assert_eq!(vp_small.visible_w, 40);
+        assert_eq!(vp_small.crop_x, 20);
+        assert_eq!(vp_small.visible_h, 20);
+        assert_eq!(vp_small.crop_y, 20);
+        assert_eq!(vp_small.pad_x, 0);
+        assert_eq!(vp_small.pad_y, 0);
+
+        let vp_large = compute_viewport(120, 80, 80, 60);
+        assert_eq!(vp_large.visible_w, 80);
+        assert_eq!(vp_large.crop_x, 0);
+        assert_eq!(vp_large.visible_h, 60);
+        assert_eq!(vp_large.crop_y, 0);
+        assert_eq!(vp_large.pad_x, 20);
+        assert_eq!(vp_large.pad_y, 10);
+    }
+
+    #[test]
+    fn test_render_undersized_viewport_no_overflow() {
+        let mut renderer = FrameRenderer::default();
+        let dummy = vec![b'#'; (WIDTH * HEIGHT) as usize];
+        let frame = renderer.render(&dummy, 40, 20);
+        let lines: Vec<&str> = frame.split("\r\n").collect();
+        assert_eq!(lines.len(), 20, "Must contain exactly 20 lines for 20 row terminal");
+        for line in lines {
+            assert_eq!(line.len(), 40, "Line width must be clamped to 40 characters");
+        }
+    }
+
+    #[test]
+    fn test_render_corrupt_non_utf8_fallback() {
+        let mut renderer = FrameRenderer::default();
+        let mut dummy = vec![b'#'; (WIDTH * HEIGHT) as usize];
+        dummy[0] = 0xFF;
+        dummy[1] = 0xFE;
+        let frame = renderer.render(&dummy, 80, 60);
+        let first_line = frame.lines().next().unwrap();
+        assert_eq!(first_line.len(), 80);
+        assert!(first_line.starts_with("  ##"));
     }
 }

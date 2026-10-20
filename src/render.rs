@@ -7,6 +7,15 @@ pub fn pixel_to_ascii(pixel: u8) -> u8 {
     ASCII_CHARS[idx]
 }
 
+/// Playful "Good Apple" mode: flips the ASCII luminance ramp so dark becomes bright.
+pub fn invert_ascii_char(ch: u8) -> u8 {
+    if let Some(pos) = ASCII_CHARS.iter().position(|&b| b == ch) {
+        ASCII_CHARS[ASCII_CHARS.len() - pos]
+    } else {
+        ch
+    }
+}
+
 #[allow(dead_code)]
 pub fn compute_padding(
     term_width: u16,
